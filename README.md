@@ -3,8 +3,10 @@
 Tabula is a Chrome extension that keeps one or more "master" tab lists in a
 private GitHub Gist — or a private repo on your own Forgejo/Gitea instance —
 and lets you sync your current browser window against them, on demand.
-Nothing happens automatically: no polling, no background service worker, no
-scheduled syncs. Every sync is a button you press.
+Every sync is manual by default: no polling, no timers, no scheduled syncs
+unless you turn one on yourself. A small background service worker exists
+solely to drive an *optional* timed sync — it's off by default, and out of
+the box nothing happens automatically.
 
 There are no Tabula servers. The extension talks directly to your chosen
 backend's API using a token you provide, and stores your data there, in your
@@ -111,6 +113,99 @@ Tabs on `chrome://`, `chrome-extension://`, `edge://`, and `about:` URLs (and
 empty URLs) are always skipped — they can't be reopened on another machine,
 so Tabula never reads or writes them.
 
+## Bookmarks bar
+
+Below the tab buttons, the popup has a second, smaller row of four buttons
+for the bookmarks bar: **Push → master (merge)**, **Pull ← master (merge)**,
+**Replace local ← master**, **Replace master ← local**. They mirror the tab
+operations above, but act on your browser's bookmarks bar instead of the
+current window's tabs.
+
+The bookmarks bar is global, not per-window and not per-profile, so its
+synced state lives in **one shared file** on the backend (`_bookmarks.json`
+at the root of the Gist or repo), separate from any profile file. It's
+excluded from the profile dropdown — it never shows up as something you can
+select or switch to.
+
+- **Push** adds local bookmarks-bar links to the stored set; a link already
+  present (matched by URL, trailing slash ignored) is skipped, not
+  duplicated. New local folders are created on the stored side to hold them.
+- **Pull** adds stored links that aren't already on your local bar, placing
+  them under matching folder names (creating those folders locally if
+  needed); nothing local is removed or moved.
+- **Replace local ← master** deletes every bookmark and folder currently on
+  your local bar and recreates the stored set exactly. Requires confirmation
+  naming the bookmark count that will be recreated.
+- **Replace master ← local** overwrites the stored set with exactly what's
+  on your local bar right now, discarding whatever was stored before.
+  Requires confirmation naming the bookmark count that will replace it.
+
+As with the tab operations, only the two Replace buttons are destructive,
+and both are gated behind a confirmation dialog. Bookmarks-bar sync can also
+be folded into timed automatic sync (see below) and is included when you
+migrate data between backends.
+
+## Automatic sync
+
+Settings has an **Automatic sync** card with two independent, opt-in
+switches — both are **off by default**, so nothing syncs on its own until
+you turn one on:
+
+- **Sync on a timer** — runs a sync every N minutes (minimum 1, since that's
+  the floor `chrome.alarms` enforces) in the background, without the popup
+  open. Mode is either **Push → master (merge)** (same semantics as the
+  popup's Push button) or **Replace master ← local** (overwrites master with
+  the window's current state every interval — destructive by nature, since
+  it runs unattended with no confirmation dialog). It acts on the
+  **last-focused normal browser window** and that window's **active
+  profile** — the worker has no notion of "the popup's current window," so
+  it uses whichever window you last actually looked at. If nothing is
+  configured yet, no window is open, or no profile is selected, the timer
+  fires and silently does nothing (no error is recorded).
+- **Sync when switching profiles** — when you switch the active profile in
+  the popup, this syncs the current window into the profile you're
+  *leaving* first, using its own Push or Replace mode. It never blocks or
+  delays the switch itself: on failure, the switch still happens and the
+  popup just reports that the sync failed.
+- **Also sync bookmarks bar** — a checkbox on the timer switch that, when
+  on, also syncs the bookmarks bar (using the same Push/Replace mode) as
+  part of each timed run. It has no effect on sync-on-switch, which only
+  ever touches tab profiles.
+
+All of these settings save immediately as you change them — there's no
+separate Save button on this card, and the background worker picks up
+timer changes right away via `chrome.storage.onChanged`.
+
+The card shows a **last auto-sync** status line (timestamp and outcome) so
+you can tell whether the timer is actually running, without it
+auto-refreshing or polling while you have the page open.
+
+The background service worker that drives the timer is read-only toward
+your browser: it reads tabs and the bookmarks bar and writes to your
+backend, but it never opens, closes, or moves anything locally, and never
+shows a dialog. All of that only happens through the popup, on a button
+you press.
+
+## Migrate between backends
+
+Settings has a **Migrate data** card for moving everything from one backend
+to the other — GitHub Gist to Forgejo/Gitea, or the reverse — in one pass.
+It requires both backends' credentials already saved (connect each one via
+the backend picker above it first).
+
+- Every profile file is **copied**, source to target; the source is never
+  modified or deleted, and your local tabs are never touched either.
+- The shared `_bookmarks.json` file is copied too, if it exists on the
+  source.
+- A file that already exists on the target under the same name is
+  **overwritten** — the confirmation dialog before you click Migrate spells
+  this out explicitly.
+- Each profile is migrated independently: one profile failing doesn't stop
+  the rest, and the result reports which (if any) failed by name.
+- An optional checkbox, checked by default, switches your **active
+  backend** to the target once the run finishes with zero failures. A run
+  with any failures never switches, even if some profiles succeeded.
+
 ## Multi-machine use
 
 Use the same backend credentials on every Chrome instance you want to sync
@@ -148,6 +243,18 @@ manually.
   too, which on that platform is access-controlled by your instance's own
   permission model, not just an unlisted URL.
 - Tabula has no servers of its own and collects no analytics or usage data.
+- If you use bookmarks-bar sync (manually or via automatic sync), the
+  titles and URLs of your bookmarks-bar links and folders are sent to your
+  chosen backend the same way tab data is — same destinations, same token,
+  same "your own account" model. Nothing else about your bookmarks (other
+  folders, the "Other Bookmarks" tree, etc.) is read or sent.
+- The optional timed auto-sync runs through a background service worker
+  (`background.js`), driven by the `alarms` permission; it's inert unless
+  you turn on "Sync on a timer" in Settings, which is off by default. It
+  only ever reads local tabs/bookmarks and writes to your backend; it never
+  opens, closes, or rearranges anything in your browser. Sync-on-switch is
+  a separate setting that runs in the popup itself (only when you actually
+  switch profiles there), not in the background worker.
 
 ## Troubleshooting
 
@@ -172,15 +279,28 @@ manually.
   host permission for your instance was revoked after setup (e.g. you
   removed it via Chrome's site permissions). Reconnect from Settings, which
   re-requests the permission prompt.
+- **Timed auto-sync doesn't seem to run** — check the "Last auto-sync" line
+  in Settings. If it's blank, the timer alarm hasn't fired yet or a
+  precondition silently wasn't met (no backend connected, no normal browser
+  window open, or no active profile) — these are treated as "nothing to do
+  yet," not errors, so nothing is recorded. If it shows a failure message,
+  that's the error from the last attempted sync.
+- **Sync-on-switch failed but the profile switched anyway** — that's by
+  design: a sync-on-switch failure is reported in the popup's feedback line
+  but never blocks or reverts the switch itself.
+- **Migration reports some profiles failed** — the failed profiles are
+  named in the result message; everything else still migrated. Nothing on
+  the source was touched, so it's safe to just re-run Migrate afterward.
 
 ## Development
 
 ```
 tabula/
   manifest.json
+  background.js       # service worker: timed auto-sync alarm handler only
   popup.html / popup.js / popup.css
   settings.html / settings.js / settings.css
-  common.js          # shared storage + backend (GitHub Gist, Forgejo/Gitea) API helpers, loaded by both pages
+  common.js          # shared storage + backend (GitHub Gist, Forgejo/Gitea) API helpers + bookmarks-bar helpers, loaded by popup, settings, and background
   icons/              # 16/32/48/128px, currently placeholder art
 ```
 
