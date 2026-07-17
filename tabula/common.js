@@ -19,6 +19,10 @@
 const GITHUB_API = "https://api.github.com";
 const GIST_DESCRIPTION = "tabula-data"; // the single gist that holds all profiles
 
+// Forgejo/Gitea backend: profiles live as one JSON file per profile at the
+// root of a single private repo with this name (there is no gist API).
+const FORGEJO_REPO_NAME = "tabula-data";
+
 // URL schemes we cannot reopen and therefore refuse to store in a profile.
 const SKIP_URL_PREFIXES = [
   "chrome://",
@@ -97,6 +101,87 @@ async function getGistId() {
 async function getActiveProfile() {
   const { activeProfile } = await storageGet("local", ["activeProfile"]);
   return activeProfile || null;
+}
+
+// Normalize a user-typed Forgejo/Gitea instance URL: default to https:// when
+// no scheme is given, and strip any trailing slash(es) so we can append
+// "/api/v1/..." cleanly.
+function normalizeForgejoUrl(url) {
+  let u = (url || "").trim();
+  if (!u) return "";
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  return u.replace(/\/+$/, "");
+}
+
+// Resolve the effective backend + its config from sync storage.
+// Backward compatibility: installs from before the Forgejo feature have only
+// githubToken+gistId and NO `backend` key — those are treated as "github".
+// Returns { backend, configured, ...backend-specific fields }.
+async function getBackendConfig() {
+  const items = await storageGet("sync", [
+    "backend",
+    "githubToken",
+    "gistId",
+    "forgejoUrl",
+    "forgejoToken",
+    "forgejoOwner",
+  ]);
+  const backend = items.backend === "forgejo" ? "forgejo" : "github";
+
+  if (backend === "forgejo") {
+    return {
+      backend,
+      configured: !!(items.forgejoUrl && items.forgejoToken),
+      forgejoUrl: items.forgejoUrl || null,
+      forgejoToken: items.forgejoToken || null,
+      forgejoOwner: items.forgejoOwner || null,
+    };
+  }
+  return {
+    backend,
+    configured: !!(items.githubToken && items.gistId),
+    githubToken: items.githubToken || null,
+    gistId: items.gistId || null,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Runtime host-permission wrappers (promise-based)
+ *
+ * The Forgejo instance URL is user-supplied, so its host permission is granted
+ * at runtime from optional_host_permissions rather than baked into the
+ * manifest. chrome.permissions.request MUST run inside a live user gesture; see
+ * the timing note in settings.js.
+ * ------------------------------------------------------------------ */
+
+function permissionsContains(origins) {
+  return new Promise((resolve, reject) => {
+    chrome.permissions.contains({ origins }, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new TabulaError(chrome.runtime.lastError.message, "generic"));
+      } else {
+        resolve(result);
+      }
+    });
+  });
+}
+
+function permissionsRequest(origins) {
+  return new Promise((resolve, reject) => {
+    chrome.permissions.request({ origins }, (granted) => {
+      if (chrome.runtime.lastError) {
+        reject(new TabulaError(chrome.runtime.lastError.message, "generic"));
+      } else {
+        resolve(granted);
+      }
+    });
+  });
+}
+
+// Build the host match pattern ("https://host/*") for an instance origin.
+// Throws on a malformed URL so callers can surface a clear message.
+function forgejoOriginPattern(url) {
+  return new URL(url).origin + "/*";
 }
 
 function setActiveProfile(fileName) {
@@ -377,6 +462,323 @@ function renameProfile(token, gistId, oldFileName, newFileName, profile) {
     method: "PATCH",
     body: { files },
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Base64 <-> UTF-8 (for the Forgejo contents API, which is base64-only)
+ * ------------------------------------------------------------------ */
+
+// Encode a JS string as base64 of its UTF-8 bytes. We route through
+// TextEncoder (not btoa(str), which is Latin-1 and mangles multi-byte chars)
+// and build the binary string in chunks — String.fromCharCode.apply over a
+// very large array overflows the call stack / argument limit on big profiles.
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+// Decode base64 to a JS string as UTF-8. Plain atob yields Latin-1, so we push
+// the raw bytes through TextDecoder or non-ASCII titles corrupt. Whitespace is
+// stripped first since some APIs wrap the base64 payload in newlines.
+function base64ToUtf8(b64) {
+  const binary = atob((b64 || "").replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+/* ------------------------------------------------------------------ *
+ * Forgejo / Gitea contents API
+ *
+ * Forgejo has no gist API, so profiles are stored as one JSON file per profile
+ * at the root of a private repo named "tabula-data". API base is
+ * <instanceUrl>/api/v1. Auth uses the Gitea "token <token>" scheme (works on
+ * every Forgejo version, unlike "Bearer" which is OAuth-only on older builds).
+ * ------------------------------------------------------------------ */
+
+// One place for every Forgejo call. Adds auth + accept headers, then maps
+// non-OK responses onto the same TabulaError codes the UI already understands.
+async function forgejoFetch(base, token, path, options) {
+  const opts = options || {};
+  let response;
+  try {
+    response = await fetch(base + path, {
+      method: opts.method || "GET",
+      headers: Object.assign(
+        {
+          Authorization: "token " + token,
+          Accept: "application/json",
+        },
+        opts.body ? { "Content-Type": "application/json" } : {},
+        opts.headers || {}
+      ),
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (e) {
+    // fetch() rejects only on network-level failure (offline, DNS, bad host).
+    throw new TabulaError(
+      "Network error — check your connection and the instance URL.",
+      "network"
+    );
+  }
+
+  if (response.ok) {
+    if (response.status === 204) return null;
+    return response.json();
+  }
+
+  // Map status → code: 401 auth, 404 not_found, everything else http.
+  if (response.status === 401) {
+    throw new TabulaError(
+      "Invalid or expired token. Re-enter your Forgejo token in Settings.",
+      "auth"
+    );
+  }
+  if (response.status === 404) {
+    throw new TabulaError("Not found (404).", "not_found", { status: 404 });
+  }
+  let detail = "";
+  try {
+    const body = await response.json();
+    if (body && body.message) detail = " — " + body.message;
+  } catch (e) {
+    /* ignore parse errors */
+  }
+  throw new TabulaError(
+    "Forgejo error (" + response.status + ")" + detail,
+    "http",
+    { status: response.status }
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Provider abstraction
+ *
+ * getProvider() reads the active backend config from storage and returns an
+ * object with a uniform async surface the UI codes against:
+ *   verify()                          -> { login }
+ *   ensureContainer()                 -> { id }   (find-or-create gist/repo)
+ *   listProfiles()                    -> [{ fileName, displayName }]
+ *   readProfile(fileName)             -> profile object
+ *   writeProfile(fileName, profile)   -> (create or overwrite)
+ *   deleteProfile(fileName)
+ *   renameProfile(old, new, profile)
+ * ------------------------------------------------------------------ */
+
+// GitHub Gist backend: a thin wrapper over the existing free functions so its
+// on-the-wire behavior is byte-for-byte identical to the pre-provider code.
+class GithubGistProvider {
+  constructor(config) {
+    this.token = config.githubToken || null;
+    this.gistId = config.gistId || null;
+  }
+
+  async verify() {
+    const user = await verifyToken(this.token);
+    return { login: user.login };
+  }
+
+  async ensureContainer() {
+    let gistId = await findTabulaGist(this.token);
+    if (!gistId) gistId = await createTabulaGist(this.token);
+    this.gistId = gistId;
+    return { id: gistId };
+  }
+
+  listProfiles() {
+    return listProfiles(this.token, this.gistId);
+  }
+
+  readProfile(fileName) {
+    return readProfile(this.token, this.gistId, fileName);
+  }
+
+  writeProfile(fileName, profile) {
+    return writeProfile(this.token, this.gistId, fileName, profile);
+  }
+
+  deleteProfile(fileName) {
+    return deleteProfile(this.token, this.gistId, fileName);
+  }
+
+  renameProfile(oldFileName, newFileName, profile) {
+    return renameProfile(this.token, this.gistId, oldFileName, newFileName, profile);
+  }
+}
+
+// Forgejo/Gitea backend over the contents API.
+class ForgejoProvider {
+  constructor(config) {
+    // forgejoUrl is stored already normalized (scheme present, no trailing /).
+    this.base = (config.forgejoUrl || "") + "/api/v1";
+    this.token = config.forgejoToken || null;
+    this.owner = config.forgejoOwner || null;
+  }
+
+  async verify() {
+    const user = await forgejoFetch(this.base, this.token, "/user");
+    this.owner = user.login; // cache so container/file paths can be built
+    return { login: user.login };
+  }
+
+  // Path to the tabula-data repo for the current owner.
+  _repoPath() {
+    return "/repos/" + encodeURIComponent(this.owner) + "/" + FORGEJO_REPO_NAME;
+  }
+
+  // Path to one file inside the repo's contents API.
+  _contentPath(fileName) {
+    return this._repoPath() + "/contents/" + encodeURIComponent(fileName);
+  }
+
+  async ensureContainer() {
+    if (!this.owner) {
+      const user = await forgejoFetch(this.base, this.token, "/user");
+      this.owner = user.login;
+    }
+
+    try {
+      await forgejoFetch(this.base, this.token, this._repoPath());
+    } catch (e) {
+      if (e.code !== "not_found") throw e;
+      // Create the private repo. auto_init is REQUIRED: without it the repo has
+      // no default branch and the contents API has nothing to commit against.
+      await forgejoFetch(this.base, this.token, "/user/repos", {
+        method: "POST",
+        body: {
+          name: FORGEJO_REPO_NAME,
+          private: true,
+          auto_init: true,
+          description: "Tabula tab-sync profiles",
+        },
+      });
+      // Seed an initial Default profile so first launch has something to show.
+      await this.writeProfile("Default.json", {
+        displayName: "Default",
+        lastModified: new Date().toISOString(),
+        tabs: [],
+        groups: {},
+      });
+    }
+    return { id: this.owner + "/" + FORGEJO_REPO_NAME };
+  }
+
+  async listProfiles() {
+    const entries = await forgejoFetch(
+      this.base,
+      this.token,
+      this._repoPath() + "/contents/"
+    );
+    const profiles = [];
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        // Keep only .json files (dir listing also carries type "dir", etc.).
+        if (entry.type !== "file") continue;
+        if (!entry.name.endsWith(".json")) continue;
+        // Derive the display name from the filename — reading every file's
+        // content just to get displayName would be N extra requests.
+        profiles.push({
+          fileName: entry.name,
+          displayName: entry.name.replace(/\.json$/, ""),
+        });
+      }
+    }
+    profiles.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    return profiles;
+  }
+
+  async readProfile(fileName) {
+    let file;
+    try {
+      file = await forgejoFetch(this.base, this.token, this._contentPath(fileName));
+    } catch (e) {
+      if (e.code === "not_found") {
+        throw new TabulaError(
+          'Profile "' + fileName + '" no longer exists in the repo.',
+          "not_found"
+        );
+      }
+      throw e;
+    }
+    let text;
+    try {
+      text = base64ToUtf8(file.content || "");
+    } catch (e) {
+      throw new TabulaError("Profile file is corrupt (bad base64).", "generic");
+    }
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new TabulaError("Profile file is corrupt (invalid JSON).", "generic");
+    }
+  }
+
+  // Look up a file's current blob sha, or null if it doesn't exist yet.
+  async _getSha(fileName) {
+    try {
+      const file = await forgejoFetch(
+        this.base,
+        this.token,
+        this._contentPath(fileName)
+      );
+      return file && file.sha ? file.sha : null;
+    } catch (e) {
+      if (e.code === "not_found") return null;
+      throw e;
+    }
+  }
+
+  async writeProfile(fileName, profile) {
+    const body = {
+      content: utf8ToBase64(JSON.stringify(profile, null, 2)),
+      message: "tabula: update " + fileName,
+    };
+    // The contents API needs the current blob sha to UPDATE an existing file,
+    // and rejects the request if a sha is sent when CREATING one. So fetch the
+    // sha first and include it only when the file already exists.
+    const sha = await this._getSha(fileName);
+    if (sha) body.sha = sha;
+    return forgejoFetch(this.base, this.token, this._contentPath(fileName), {
+      method: "PUT",
+      body,
+    });
+  }
+
+  async deleteProfile(fileName) {
+    const sha = await this._getSha(fileName);
+    if (!sha) return null; // already gone
+    return forgejoFetch(this.base, this.token, this._contentPath(fileName), {
+      method: "DELETE",
+      body: { sha, message: "tabula: delete " + fileName },
+    });
+  }
+
+  async renameProfile(oldFileName, newFileName, profile) {
+    // NOT atomic: unlike the gist PATCH (which can add + delete in one call),
+    // the contents API is one-file-per-request. Write the new file first, then
+    // delete the old — if the delete fails the worst case is a leftover
+    // duplicate, never lost data.
+    await this.writeProfile(newFileName, profile);
+    if (newFileName !== oldFileName) await this.deleteProfile(oldFileName);
+    return null;
+  }
+}
+
+// Build a provider from an explicit config (used by settings.js before the
+// config is persisted).
+function makeProvider(config) {
+  if (config.backend === "forgejo") return new ForgejoProvider(config);
+  return new GithubGistProvider(config);
+}
+
+// Build a provider from the currently-stored backend config.
+async function getProvider() {
+  return makeProvider(await getBackendConfig());
 }
 
 /* ------------------------------------------------------------------ *

@@ -8,6 +8,7 @@
     "https://api.github.com/*",
     "https://gist.githubusercontent.com/*"
   ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Tabula — Manual Tab Sync",

@@ -10,10 +10,10 @@
   // In-memory session state. The master snapshot is display-only and is never
   // trusted for an operation — every operation re-fetches the master fresh.
   const state = {
-    token: null,
-    gistId: null,
+    provider: null, // backend provider (GitHub Gist or Forgejo)
+    backend: "github", // "github" | "forgejo" — also scopes the display cache
     profiles: [], // [{ fileName, displayName }]
-    activeFile: null, // gist filename of the active profile
+    activeFile: null, // profile filename of the active profile
     master: null, // last-fetched master profile object (for display)
     busy: false,
   };
@@ -26,18 +26,44 @@
   async function init() {
     cacheElements();
     wireEvents();
+    let config;
     try {
-      state.token = await getToken();
-      state.gistId = await getGistId();
+      config = await getBackendConfig();
     } catch (e) {
       // Storage failure is fatal for the popup; show it and stop.
       return showFatal(describeError(e));
     }
 
-    if (!state.token || !state.gistId) {
+    if (!config.configured) {
       el.noToken.classList.remove("hidden");
       return;
     }
+
+    // Forgejo talks to a user-supplied host whose access is granted at runtime
+    // (optional host permission). If that grant was revoked since setup, every
+    // fetch would fail — so check it up front and, if missing, fall back to the
+    // not-configured state pointing the user to Settings.
+    if (config.backend === "forgejo") {
+      let granted = false;
+      try {
+        granted = await permissionsContains([
+          forgejoOriginPattern(config.forgejoUrl),
+        ]);
+      } catch (e) {
+        granted = false;
+      }
+      if (!granted) {
+        el.noToken.classList.remove("hidden");
+        el.noToken.querySelector(".no-token-msg").textContent =
+          "Access to " +
+          config.forgejoUrl +
+          " isn't granted. Reconnect in Settings.";
+        return;
+      }
+    }
+
+    state.backend = config.backend;
+    state.provider = makeProvider(config);
 
     el.main.classList.remove("hidden");
     // loadProfiles runs on the initial load path (outside guarded()), so its
@@ -136,11 +162,11 @@
     showFeedback("Loading profiles…");
     let profiles;
     try {
-      profiles = await listProfiles(state.token, state.gistId);
+      profiles = await state.provider.listProfiles();
     } catch (e) {
       if (e.code === "not_found") {
-        // The gist id we stored points at a gist that no longer exists.
-        return offerRecreateGist();
+        // The stored container (gist/repo) no longer exists.
+        return offerRecreateContainer();
       }
       throw e;
     }
@@ -257,7 +283,7 @@
       tabs,
       groups,
     };
-    await writeProfile(state.token, state.gistId, fileName, profile);
+    await state.provider.writeProfile(fileName, profile);
 
     state.profiles.push({ fileName, displayName: displayName.trim() });
     state.profiles.sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -293,19 +319,14 @@
 
     showFeedback("Renaming…");
     // Re-fetch fresh so we rename the current content, not a stale cache.
-    const profile = await readProfile(state.token, state.gistId, active.fileName);
+    const profile = await state.provider.readProfile(active.fileName);
     profile.displayName = name.trim();
     profile.lastModified = new Date().toISOString();
     const newFileName = profileFileName(name.trim());
 
-    // Create new file + delete old in a single PATCH.
-    await renameProfile(
-      state.token,
-      state.gistId,
-      active.fileName,
-      newFileName,
-      profile
-    );
+    // Provider handles the rename (single gist PATCH, or write-then-delete on
+    // Forgejo).
+    await state.provider.renameProfile(active.fileName, newFileName, profile);
 
     // Update local state.
     const idx = state.profiles.findIndex((p) => p.fileName === active.fileName);
@@ -343,7 +364,7 @@
     if (!confirmed) return;
 
     showFeedback("Deleting…");
-    await deleteProfile(state.token, state.gistId, active.fileName);
+    await state.provider.deleteProfile(active.fileName);
 
     state.profiles = state.profiles.filter(
       (p) => p.fileName !== active.fileName
@@ -385,11 +406,7 @@
     el.localCount.textContent = String(local.tabs.length);
 
     // Master is always fetched fresh; we cache it only for display.
-    const master = await readProfile(
-      state.token,
-      state.gistId,
-      state.activeFile
-    );
+    const master = await state.provider.readProfile(state.activeFile);
     state.master = master;
     el.masterCount.textContent = String((master.tabs || []).length);
     el.masterModified.textContent = formatTimestamp(master.lastModified);
@@ -409,11 +426,7 @@
     showFeedback("Pushing to master…");
     const local = await getCurrentTabs();
     // Always re-fetch master immediately before writing.
-    const master = await readProfile(
-      state.token,
-      state.gistId,
-      state.activeFile
-    );
+    const master = await state.provider.readProfile(state.activeFile);
 
     // Tolerate a hand-edited profile missing its tabs array.
     master.tabs = master.tabs || [];
@@ -438,7 +451,7 @@
     }
 
     master.lastModified = new Date().toISOString();
-    await writeProfile(state.token, state.gistId, state.activeFile, master);
+    await state.provider.writeProfile(state.activeFile, master);
     state.master = master;
     el.masterCount.textContent = String(master.tabs.length);
     el.masterModified.textContent = formatTimestamp(master.lastModified);
@@ -463,11 +476,7 @@
     requireActive();
     showFeedback("Pulling from master…");
     const local = await getCurrentTabs();
-    const master = await readProfile(
-      state.token,
-      state.gistId,
-      state.activeFile
-    );
+    const master = await state.provider.readProfile(state.activeFile);
 
     const openUrls = new Set(local.tabs.map((t) => normalizeUrl(t.url)));
     const toOpen = (master.tabs || []).filter(
@@ -517,11 +526,7 @@
 
   async function doReplaceLocal() {
     requireActive();
-    const master = await readProfile(
-      state.token,
-      state.gistId,
-      state.activeFile
-    );
+    const master = await state.provider.readProfile(state.activeFile);
 
     const confirmed = await modalConfirm({
       message:
@@ -631,7 +636,7 @@
       tabs: local.tabs,
       groups: local.groups,
     };
-    await writeProfile(state.token, state.gistId, state.activeFile, profile);
+    await state.provider.writeProfile(state.activeFile, profile);
     state.master = profile;
     el.masterCount.textContent = String(profile.tabs.length);
     el.masterModified.textContent = formatTimestamp(profile.lastModified);
@@ -674,23 +679,34 @@
   }
 
   /* ----------------------------------------------------------------- *
-   * Recovery: gist deleted (404)
+   * Recovery: container (gist/repo) deleted (404)
    * ----------------------------------------------------------------- */
 
-  async function offerRecreateGist() {
+  async function offerRecreateContainer() {
+    const isForgejo = state.backend === "forgejo";
+    const noun = isForgejo ? "repo" : "gist";
     const confirmed = await modalConfirm({
-      message:
-        "The Tabula gist wasn't found (it may have been deleted). Recreate a fresh private gist?",
+      message: isForgejo
+        ? "The tabula-data repo wasn't found (it may have been deleted). Recreate it?"
+        : "The Tabula gist wasn't found (it may have been deleted). Recreate a fresh private gist?",
       confirmLabel: "Recreate",
     });
     if (!confirmed) {
-      showFeedback("Gist not found. Reconnect in Settings.", "error");
+      showFeedback(
+        (isForgejo ? "Repo" : "Gist") + " not found. Reconnect in Settings.",
+        "error"
+      );
       return;
     }
-    const newId = await createTabulaGist(state.token);
-    await storageSet("sync", { gistId: newId });
-    state.gistId = newId;
-    showFeedback("Recreated gist.", "ok");
+    // ensureContainer finds-or-creates and updates the provider's own id/owner;
+    // persist the (possibly new) reference back to sync storage.
+    await state.provider.ensureContainer();
+    if (isForgejo) {
+      await storageSet("sync", { forgejoOwner: state.provider.owner });
+    } else {
+      await storageSet("sync", { gistId: state.provider.gistId });
+    }
+    showFeedback("Recreated " + noun + ".", "ok");
     await loadProfiles();
   }
 
@@ -882,15 +898,23 @@
   }
 
   // Per-profile display cache in chrome.storage.local (never trusted for ops).
+  // Keys are scoped by backend so switching backends (a Forgejo "Work" vs. a
+  // GitHub "Work") never shows the other backend's stale tab count.
+  function cacheKey(fileName) {
+    return state.backend + ":" + fileName;
+  }
+
   async function getMasterCache(fileName) {
+    const key = cacheKey(fileName);
     const { masterCache } = await storageGet("local", ["masterCache"]);
-    return masterCache && masterCache[fileName] ? masterCache[fileName] : null;
+    return masterCache && masterCache[key] ? masterCache[key] : null;
   }
 
   async function setMasterCache(fileName, snapshot) {
+    const key = cacheKey(fileName);
     const { masterCache } = await storageGet("local", ["masterCache"]);
     const next = masterCache || {};
-    next[fileName] = snapshot;
+    next[key] = snapshot;
     await storageSet("local", { masterCache: next });
   }
 
