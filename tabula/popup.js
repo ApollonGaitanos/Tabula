@@ -540,72 +540,106 @@
 
     showFeedback("Replacing local…");
 
-    // newtab-survival trick: a Chrome window closes when its last tab closes.
-    // Open a throwaway chrome://newtab FIRST so the window stays alive while we
-    // remove the original tabs, then close the throwaway at the very end.
-    const survivor = await chromeCall((cb) =>
-      chrome.tabs.create({ url: "chrome://newtab", active: false }, cb)
-    );
+    // create-before-remove ordering: DON'T empty the window first. Emptying it
+    // makes Chrome activate whatever remains — and if that's the New Tab Page,
+    // the NTP grabs browser-UI focus for its search box, which closes the action
+    // popup. Since all our logic runs in the popup's JS context (there is no
+    // background worker), losing the popup mid-operation aborts everything and
+    // strands the window blank. So we create the new tabs (and group them) while
+    // the originals still exist — the window never empties — and remove the
+    // originals as the very LAST tab op. This also fails safe: if creation goes
+    // wrong we can bail without having closed anything.
 
+    // Record the ids of the tabs to replace BEFORE creating anything, so the
+    // create step can't sweep the new tabs into this set.
     const currentTabs = await chromeCall((cb) =>
       chrome.tabs.query({ currentWindow: true }, cb)
     );
-    const idsToClose = currentTabs
-      .filter((t) => t.id !== survivor.id)
-      .map((t) => t.id);
-    if (idsToClose.length) {
-      await chromeCall((cb) => chrome.tabs.remove(idsToClose, cb));
-    }
+    const oldIds = currentTabs.map((t) => t.id);
 
-    // Recreate master state exactly, in order. Tabs are created after the
-    // survivor tab, so they land in master order; we group afterwards.
-    const created = [];
-    let failed = 0;
-    for (const tab of master.tabs || []) {
-      let newTab;
-      try {
-        newTab = await chromeCall((cb) =>
-          chrome.tabs.create(
-            { url: tab.url, active: false, pinned: !!tab.pinned },
-            cb
-          )
-        );
-      } catch (e) {
-        // Chrome refuses to open some URLs (chrome:// pages, another
-        // extension's pages, javascript:, malformed URLs). Skip the bad one so
-        // one entry can't abort the restore and strand the window on the
-        // throwaway newtab with the originals already closed.
-        failed++;
-        continue;
+    const toOpen = master.tabs || [];
+
+    if (toOpen.length > 0) {
+      // Recreate master state exactly, in order, while the originals still
+      // exist. New pinned tabs are clamped to the pinned region (right after any
+      // existing pinned tabs) and new unpinned tabs append at the end; order
+      // WITHIN the new pinned run and WITHIN the new unpinned run each preserve
+      // master order. So once oldIds are removed, the remaining layout is exactly
+      // master order. Grouping happens before the removal and touches only the
+      // new tabs.
+      const created = [];
+      let failed = 0;
+      for (const tab of toOpen) {
+        let newTab;
+        try {
+          newTab = await chromeCall((cb) =>
+            chrome.tabs.create(
+              { url: tab.url, active: false, pinned: !!tab.pinned },
+              cb
+            )
+          );
+        } catch (e) {
+          // Chrome refuses to open some URLs (chrome:// pages, another
+          // extension's pages, javascript:, malformed URLs). Skip the bad one so
+          // one entry can't abort the restore.
+          failed++;
+          continue;
+        }
+        created.push({
+          tabId: newTab.id,
+          group: tab.group,
+          pinned: !!tab.pinned,
+        });
       }
-      created.push({ tabId: newTab.id, group: tab.group, pinned: !!tab.pinned });
+
+      if (created.length === 0) {
+        // Every create failed: don't close anything — leave the window exactly
+        // as it was and tell the user nothing could be opened.
+        showFeedback(
+          "Nothing could be opened — the window was left untouched.",
+          "error"
+        );
+        return;
+      }
+
+      await applyGroups(created, master.groups || {});
+
+      // The new tabs now populate the window; removing the originals is the LAST
+      // tab op. Chrome auto-activates a neighboring (new) regular page, which
+      // doesn't steal browser-UI focus the way the NTP does — the popup survives.
+      // Even if it didn't, this removal is already dispatched and the window ends
+      // in the correct final state.
+      await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
+
+      await refreshStatus();
+      let msg =
+        "Local replaced with " +
+        created.length +
+        plural(created.length, " tab", " tabs") +
+        " from master.";
+      if (failed) {
+        msg +=
+          " " +
+          failed +
+          plural(failed, " tab", " tabs") +
+          " couldn't be opened.";
+      }
+      showFeedback(msg, failed ? "error" : "ok");
+      return;
     }
 
-    await applyGroups(created, master.groups || {});
-
-    if (created.length > 0) {
-      // Real tabs now keep the window alive; drop the throwaway newtab.
-      await chromeCall((cb) => chrome.tabs.remove(survivor.id, cb));
-    } else {
-      // Master was empty (or nothing could be opened): keep the survivor as the
-      // window's blank tab instead of closing it (which would close the whole
-      // window).
-      await chromeCall((cb) =>
-        chrome.tabs.update(survivor.id, { active: true }, cb)
-      );
-    }
+    // Master is empty: minimal survivor path. Create one blank tab so the window
+    // doesn't close when the originals go, then remove the originals. That
+    // removal is the final action — if the NTP steals focus and closes the popup
+    // afterward, the operation is already complete; only the feedback line below
+    // is lost (acceptable).
+    await chromeCall((cb) =>
+      chrome.tabs.create({ url: "chrome://newtab", active: false }, cb)
+    );
+    await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
 
     await refreshStatus();
-    let msg =
-      "Local replaced with " +
-      created.length +
-      plural(created.length, " tab", " tabs") +
-      " from master.";
-    if (failed) {
-      msg +=
-        " " + failed + plural(failed, " tab", " tabs") + " couldn't be opened.";
-    }
-    showFeedback(msg, failed ? "error" : "ok");
+    showFeedback("Local replaced with 0 tabs from master.", "ok");
   }
 
   /* ----------------------------------------------------------------- *
