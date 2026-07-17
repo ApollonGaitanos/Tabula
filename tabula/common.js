@@ -738,13 +738,15 @@ class ForgejoProvider {
       content: utf8ToBase64(JSON.stringify(profile, null, 2)),
       message: "tabula: update " + fileName,
     };
-    // The contents API needs the current blob sha to UPDATE an existing file,
-    // and rejects the request if a sha is sent when CREATING one. So fetch the
-    // sha first and include it only when the file already exists.
+    // Unlike GitHub, where PUT on the contents API both creates and updates,
+    // Gitea/Forgejo split the two: POST creates a new file (no sha allowed),
+    // while PUT updates an existing one and requires the current blob sha.
+    // Fetch the sha first to decide which verb applies, and include it only
+    // when the file already exists.
     const sha = await this._getSha(fileName);
     if (sha) body.sha = sha;
     return forgejoFetch(this.base, this.token, this._contentPath(fileName), {
-      method: "PUT",
+      method: sha ? "PUT" : "POST",
       body,
     });
   }
