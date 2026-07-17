@@ -311,5 +311,5 @@ directly via `<script>` tags. Edit the files and reload the extension from
 To package for the Chrome Web Store:
 
 ```
-zip -r tabula.zip tabula/
+cd tabula && zip -r ../tabula.zip .
 ```

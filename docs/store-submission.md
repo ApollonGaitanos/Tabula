@@ -219,7 +219,7 @@ no `activeTab`, no `scripting`, no remote code.
 ## Submission checklist
 
 - [ ] Chrome Web Store developer account registered (one-time $5 fee).
-- [ ] Package the extension: `zip -r tabula.zip tabula/` from the repo root.
+- [ ] Package the extension: `cd tabula && zip -r ../tabula.zip .` — the Web Store requires `manifest.json` at the root of the zip, so zip the folder's contents, not the folder itself.
 - [ ] At least one screenshot at 1280x800 or 640x400 (Chrome Web Store
       requires 1-5 screenshots in one of these two sizes).
 - [ ] 128x128 icon is already present at `tabula/icons/icon128.png` — no
