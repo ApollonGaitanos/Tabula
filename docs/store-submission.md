@@ -46,6 +46,13 @@ also a reasonable fit if Productivity isn't accepted for this listing).
 > content). Nothing is sent anywhere else. There is no telemetry, no
 > analytics, and no account system beyond your own GitHub token.
 >
+> Prefer to self-host? Tabula also supports a Forgejo/Gitea backend: point
+> it at your own instance URL and an access token, and profiles are stored
+> as commits in a private repo on that instance instead — with the same
+> manual, explicit sync model and the same four operations. Chrome asks for
+> a one-time permission prompt naming your instance's address before the
+> first connection, and access is limited to exactly that address.
+>
 > Because everything is a manual action with a visible confirmation on
 > anything destructive, Tabula never surprises you by closing or reopening
 > tabs you didn't ask it to touch.
@@ -64,23 +71,34 @@ it from the "Privacy practices" tab of the developer dashboard listing.
 Tabula does not collect, transmit, or sell any data to the developer or any
 third party. Tabula has no servers.
 
-When you use Tabula, tab URLs, titles, group names, and colors from your
-current browser window are sent only to GitHub's API (`api.github.com`),
-using a Personal Access Token you provide, and stored in a private
-("secret") GitHub Gist that belongs to your own GitHub account — not the
-developer's. Reading large profile files may also fetch content directly
-from `gist.githubusercontent.com`, GitHub's Gist raw-content host. These are
-the only two network destinations Tabula ever contacts.
+When you use Tabula with the default GitHub backend, tab URLs, titles, group
+names, and colors from your current browser window are sent only to
+GitHub's API (`api.github.com`), using a Personal Access Token you provide,
+and stored in a private ("secret") GitHub Gist that belongs to your own
+GitHub account — not the developer's. Reading large profile files may also
+fetch content directly from `gist.githubusercontent.com`, GitHub's Gist
+raw-content host. These are the only two network destinations Tabula
+contacts in this mode.
 
-Your GitHub token is stored in Chrome's synced extension storage
-(`chrome.storage.sync`), which is encrypted and managed by Google as part of
-your Chrome sync setup. The token is never sent anywhere except in
-authenticated requests to `api.github.com`.
+Tabula also offers an optional Forgejo/Gitea backend for people who
+self-host their own instance. If you choose it, your tab data and access
+token are sent only to the single instance URL you yourself enter — nowhere
+else, and GitHub is not contacted at all in this mode. Access to that
+address is granted by you, explicitly, through a browser permission prompt
+naming that exact origin before Tabula ever contacts it.
+
+Your access token — GitHub or Forgejo/Gitea, whichever backend you use — is
+stored in Chrome's synced extension storage (`chrome.storage.sync`), which
+is encrypted and managed by Google as part of your Chrome sync setup. The
+token is never sent anywhere except in authenticated requests to that
+backend's API (`api.github.com`, or the Forgejo/Gitea instance URL you
+entered).
 
 Tabula includes no analytics, crash reporting, or advertising code, and does
-not track usage. No data is sold or shared with any third party, because no
-data is collected by the developer in the first place — it goes directly
-from your browser to your own GitHub account.
+not track usage, in either mode. No data is sold or shared with any third
+party, because no data is collected by the developer in the first place —
+it goes directly from your browser to your own GitHub account or your own
+self-hosted instance. Tabula has no servers of its own in either mode.
 
 ---
 
@@ -104,9 +122,25 @@ every permission. Suggested answers:
 - **Host permission `https://gist.githubusercontent.com/*`** — fallback used
   to fetch raw file content for profile files too large to be returned
   inline by the Gist metadata API.
+- **Optional host permissions `https://*/*` and `http://*/*`** — Tabula
+  optionally supports syncing to a user's own self-hosted Forgejo or Gitea
+  instance instead of GitHub. Because that instance's URL is chosen by the
+  user at setup time and cannot be known in advance, it can't be listed as
+  a fixed host permission the way `api.github.com` is. These broad patterns
+  are declared only in `optional_host_permissions`, which grants nothing by
+  itself — no host is ever accessed at install time or in the background.
+  Access is requested at runtime, from `chrome.permissions.request()`,
+  scoped to exactly the single origin the user typed (e.g.
+  `https://git.example.com/*`, not a wildcard), and only in direct response
+  to the user clicking "Validate & Save" in Settings (a live user gesture).
+  Chrome shows its own permission prompt naming that specific origin before
+  anything is granted; declining it aborts the save with nothing persisted
+  and nothing contacted. Users who never enable the Forgejo/Gitea backend
+  never see this prompt and Tabula never requests or holds any origin
+  beyond the two GitHub hosts above.
 
-No other permissions are requested — no `<all_urls>`, no `activeTab`, no
-`scripting`, no remote code.
+No other permissions are requested — no `<all_urls>` in `host_permissions`,
+no `activeTab`, no `scripting`, no remote code.
 
 ## Submission checklist
 
@@ -118,9 +152,9 @@ No other permissions are requested — no `<all_urls>`, no `activeTab`, no
       action needed there, only replace it if the art below changes.
 - [ ] Single-purpose description ready for the review form: "Sync the
       current window's tabs and tab groups against a master list the user
-      stores in their own private GitHub Gist." Keep the listing consistent
-      with this — reviewers reject listings that describe more than the
-      extension actually does.
+      stores in their own private GitHub Gist or self-hosted Forgejo/Gitea
+      repository." Keep the listing consistent with this — reviewers reject
+      listings that describe more than the extension actually does.
 - [ ] Privacy policy text above published at a public URL and linked in the
       dashboard's Privacy practices tab.
 - [ ] **Replace the placeholder icons** (`tabula/icons/icon16.png`,
