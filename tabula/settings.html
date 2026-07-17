@@ -153,6 +153,16 @@
           tabs every interval — anything only in master is lost.
         </p>
 
+        <label class="switch-label bookmarks-toggle">
+          <input type="checkbox" id="auto-sync-bookmarks" />
+          <span>Also sync bookmarks bar</span>
+        </label>
+        <p class="hint">
+          When on, each timed sync also syncs your bookmarks bar to the backend
+          using the same mode. Your local bookmarks are only ever read, never
+          changed, by the background worker.
+        </p>
+
         <!-- Sync on profile switch -->
         <label class="switch-label spaced-top">
           <input type="checkbox" id="switch-sync-enabled" />

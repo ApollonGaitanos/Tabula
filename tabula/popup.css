@@ -184,6 +184,27 @@ body {
   background: var(--danger-bg);
 }
 
+/* Bookmarks bar section — visually separated, compact variant of the actions */
+.bookmarks-actions {
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.section-heading {
+  margin: 0 0 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.action-btn.compact {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 /* Feedback */
 .feedback {
   margin: 0;

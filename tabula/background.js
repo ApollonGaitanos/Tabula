@@ -41,6 +41,7 @@ async function getAutoSyncSettings() {
     "autoSyncEnabled",
     "autoSyncMinutes",
     "autoSyncMode",
+    "autoSyncBookmarks",
   ]);
   let minutes = Number(items.autoSyncMinutes);
   if (!Number.isFinite(minutes) || minutes < AUTO_SYNC_MIN_MINUTES) {
@@ -50,6 +51,7 @@ async function getAutoSyncSettings() {
     autoSyncEnabled: !!items.autoSyncEnabled,
     autoSyncMinutes: minutes,
     autoSyncMode: items.autoSyncMode === "replace" ? "replace" : "push",
+    autoSyncBookmarks: !!items.autoSyncBookmarks,
   };
 }
 
@@ -169,6 +171,29 @@ async function autoReplace(provider, fileName, master, local) {
   return "Auto-replace: wrote " + local.tabs.length + " tab(s) to master";
 }
 
+// Sync the shared bookmarks set using the SAME mode as the tab sync. This is
+// WRITE-ONLY toward the backend: like the rest of this worker it NEVER modifies
+// local bookmarks (never creates/removes/moves a bookmark in the browser). It
+// reads the local bar and the stored set, and writes only the stored set.
+// Returns a short summary to append to the auto-sync message.
+async function autoSyncBookmarks(provider, mode) {
+  const local = await readBookmarksBar();
+  if (mode === "replace") {
+    await writeBookmarksMaster(provider, {
+      lastModified: new Date().toISOString(),
+      bar: local.bar,
+    });
+    return "bookmarks: replaced with " + countBookmarkLinks(local.bar);
+  }
+  const master = await readBookmarksMaster(provider);
+  const { bar, added, skipped } = mergeBookmarks(master.bar || [], local.bar);
+  await writeBookmarksMaster(provider, {
+    lastModified: new Date().toISOString(),
+    bar,
+  });
+  return "bookmarks: added " + added + ", skipped " + skipped;
+}
+
 // The alarm handler body. Bails silently (no record) for expected not-ready
 // states — not configured, missing host permission, no window, no/absent
 // profile — and records ok/error only once an actual sync is attempted.
@@ -214,10 +239,22 @@ async function runAutoSync() {
       throw e;
     }
 
-    const message =
+    let message =
       settings.autoSyncMode === "replace"
         ? await autoReplace(provider, activeFile, master, local)
         : await autoPush(provider, activeFile, master, local);
+
+    // Optionally also sync the shared bookmarks bar, using the same mode. A
+    // bookmark failure is appended to the message but does not fail the (already
+    // successful) tab sync.
+    if (settings.autoSyncBookmarks) {
+      try {
+        message += "; " + (await autoSyncBookmarks(provider, settings.autoSyncMode));
+      } catch (e) {
+        message += "; bookmarks failed: " + describeError(e);
+      }
+    }
+
     await recordAutoSync(true, message);
   } catch (e) {
     await recordAutoSync(false, describeError(e));

@@ -91,6 +91,11 @@
     el.pullBtn = byId("pull-btn");
     el.replaceLocalBtn = byId("replace-local-btn");
     el.replaceMasterBtn = byId("replace-master-btn");
+    // Bookmarks-bar action buttons (mirror the four tab operations).
+    el.bmPushBtn = byId("bm-push-btn");
+    el.bmPullBtn = byId("bm-pull-btn");
+    el.bmReplaceLocalBtn = byId("bm-replace-local-btn");
+    el.bmReplaceMasterBtn = byId("bm-replace-master-btn");
     el.feedback = byId("feedback");
     el.openSettingsBtn = byId("open-settings-btn");
     // Modal
@@ -113,6 +118,14 @@
     el.replaceLocalBtn.addEventListener("click", () => guarded(doReplaceLocal));
     el.replaceMasterBtn.addEventListener("click", () =>
       guarded(doReplaceMaster)
+    );
+    el.bmPushBtn.addEventListener("click", () => guarded(doBookmarksPush));
+    el.bmPullBtn.addEventListener("click", () => guarded(doBookmarksPull));
+    el.bmReplaceLocalBtn.addEventListener("click", () =>
+      guarded(doBookmarksReplaceLocal)
+    );
+    el.bmReplaceMasterBtn.addEventListener("click", () =>
+      guarded(doBookmarksReplaceMaster)
     );
   }
 
@@ -150,6 +163,10 @@
       el.pullBtn,
       el.replaceLocalBtn,
       el.replaceMasterBtn,
+      el.bmPushBtn,
+      el.bmPullBtn,
+      el.bmReplaceLocalBtn,
+      el.bmReplaceMasterBtn,
     ];
     controls.forEach((c) => (c.disabled = busy));
   }
@@ -763,6 +780,107 @@
     };
     await state.provider.writeProfile(fileName, profile);
     return profile;
+  }
+
+  /* ----------------------------------------------------------------- *
+   * Bookmarks-bar operations (mirror the four tab operations)
+   *
+   * The bookmarks bar is global, so these are NOT scoped to the active
+   * profile: they read/write the single shared BOOKMARKS_FILE. Every op
+   * re-fetches that file fresh (a missing file is an empty master), and both
+   * Replace ops confirm via the same modal before doing anything destructive.
+   * ----------------------------------------------------------------- */
+
+  async function doBookmarksPush() {
+    showFeedback("Pushing bookmarks to master…");
+    const local = await readBookmarksBar();
+    const master = await readBookmarksMaster(state.provider);
+    const { bar, added, skipped } = mergeBookmarks(master.bar || [], local.bar);
+    await writeBookmarksMaster(state.provider, {
+      lastModified: new Date().toISOString(),
+      bar,
+    });
+    showFeedback(
+      "Added " +
+        added +
+        plural(added, " bookmark", " bookmarks") +
+        " to master, " +
+        skipped +
+        plural(skipped, " duplicate", " duplicates") +
+        " skipped.",
+      "ok"
+    );
+  }
+
+  async function doBookmarksPull() {
+    showFeedback("Pulling bookmarks from master…");
+    const master = await readBookmarksMaster(state.provider);
+    const { added, skipped } = await applyBookmarksToLocal(master.bar || [], {
+      replace: false,
+    });
+    showFeedback(
+      "Added " +
+        added +
+        plural(added, " bookmark", " bookmarks") +
+        ", " +
+        skipped +
+        plural(skipped, " duplicate", " duplicates") +
+        " skipped.",
+      "ok"
+    );
+  }
+
+  async function doBookmarksReplaceLocal() {
+    const master = await readBookmarksMaster(state.provider);
+    const count = countBookmarkLinks(master.bar || []);
+    const confirmed = await modalConfirm({
+      message:
+        "Replace local bookmarks with master?\n\nThis DELETES every bookmark on this bar and recreates the " +
+        count +
+        " master bookmark(s) exactly.",
+      confirmLabel: "Replace local",
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    showFeedback("Replacing local bookmarks…");
+    const { added } = await applyBookmarksToLocal(master.bar || [], {
+      replace: true,
+    });
+    showFeedback(
+      "Local bookmarks replaced with " +
+        added +
+        plural(added, " bookmark", " bookmarks") +
+        " from master.",
+      "ok"
+    );
+  }
+
+  async function doBookmarksReplaceMaster() {
+    const local = await readBookmarksBar();
+    const count = countBookmarkLinks(local.bar);
+    const confirmed = await modalConfirm({
+      message:
+        "Replace master bookmarks with local?\n\nThis OVERWRITES the stored bookmark set with this bar's " +
+        count +
+        " bookmark(s). The previous stored bookmark set is discarded.",
+      confirmLabel: "Replace master",
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    showFeedback("Replacing master bookmarks…");
+    await writeBookmarksMaster(state.provider, {
+      lastModified: new Date().toISOString(),
+      bar: local.bar,
+    });
+    showFeedback(
+      "Master bookmark set replaced with " +
+        count +
+        plural(count, " bookmark", " bookmarks") +
+        " from this bar.",
+      "ok"
+    );
   }
 
   /* ----------------------------------------------------------------- *

@@ -68,6 +68,7 @@
     el.autoEnabled = byId("auto-sync-enabled");
     el.autoMinutes = byId("auto-sync-minutes");
     el.autoMode = byId("auto-sync-mode");
+    el.autoBookmarks = byId("auto-sync-bookmarks");
     el.switchEnabled = byId("switch-sync-enabled");
     el.switchMode = byId("switch-sync-mode");
     el.autoStatus = byId("auto-sync-status");
@@ -78,6 +79,7 @@
         "autoSyncEnabled",
         "autoSyncMinutes",
         "autoSyncMode",
+        "autoSyncBookmarks",
         "switchSyncEnabled",
         "switchSyncMode",
       ]);
@@ -87,6 +89,7 @@
         Number.isFinite(minutes) && minutes >= 1 ? minutes : 15
       );
       el.autoMode.value = s.autoSyncMode === "replace" ? "replace" : "push";
+      el.autoBookmarks.checked = !!s.autoSyncBookmarks;
       el.switchEnabled.checked = !!s.switchSyncEnabled;
       el.switchMode.value =
         s.switchSyncMode === "replace" ? "replace" : "push";
@@ -99,6 +102,7 @@
       el.autoEnabled,
       el.autoMinutes,
       el.autoMode,
+      el.autoBookmarks,
       el.switchEnabled,
       el.switchMode,
     ].forEach((c) => c.addEventListener("change", saveAutoSync));
@@ -118,6 +122,7 @@
         autoSyncEnabled: el.autoEnabled.checked,
         autoSyncMinutes: minutes,
         autoSyncMode: el.autoMode.value === "replace" ? "replace" : "push",
+        autoSyncBookmarks: el.autoBookmarks.checked,
         switchSyncEnabled: el.switchEnabled.checked,
         switchSyncMode: el.switchMode.value === "replace" ? "replace" : "push",
       });
@@ -387,16 +392,40 @@
       );
       const profiles = await source.listProfiles();
 
+      const failures = [];
+
+      // Copy the shared bookmarks set (the special _bookmarks.json file, which
+      // listProfiles excludes). It's a plain read+write like a profile; absent
+      // on the source means there's nothing to copy, so a not_found is skipped
+      // silently. Any other error is collected like a profile failure.
+      let bookmarksMigrated = 0;
+      setMigrateStatus("Migrating bookmarks…", "working");
+      try {
+        const bmData = await source.readProfile(BOOKMARKS_FILE);
+        await target.writeProfile(BOOKMARKS_FILE, bmData);
+        bookmarksMigrated = 1;
+      } catch (e) {
+        if (!(e && e.code === "not_found")) failures.push("bookmarks");
+      }
+
       if (!profiles.length) {
-        setMigrateStatus(
-          "No profiles found on " + dir.sourceLabel + " — nothing to migrate.",
-          "ok"
-        );
+        if (bookmarksMigrated) {
+          setMigrateStatus(
+            "No profiles on " + dir.sourceLabel + " — migrated bookmarks only.",
+            failures.length ? "error" : "ok"
+          );
+        } else {
+          setMigrateStatus(
+            "No profiles found on " +
+              dir.sourceLabel +
+              " — nothing to migrate.",
+            failures.length ? "error" : "ok"
+          );
+        }
         return;
       }
 
       let migrated = 0;
-      const failures = [];
       for (let i = 0; i < profiles.length; i++) {
         const p = profiles[i];
         setMigrateStatus(
@@ -422,6 +451,7 @@
 
       let msg =
         "Migrated " + migrated + " profile" + (migrated === 1 ? "" : "s") + ".";
+      if (bookmarksMigrated) msg += " Bookmarks migrated.";
       const kind = failures.length ? "error" : "ok";
       if (failures.length) {
         msg +=

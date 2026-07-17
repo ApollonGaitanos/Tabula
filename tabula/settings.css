@@ -312,6 +312,12 @@ a {
   color: var(--danger);
 }
 
+/* Bookmarks-bar toggle: a secondary switch under the timer controls. */
+.switch-label.bookmarks-toggle {
+  margin-top: 16px;
+  font-weight: 500;
+}
+
 .auto-status {
   margin-top: 16px;
   padding-top: 12px;

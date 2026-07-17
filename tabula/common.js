@@ -23,6 +23,12 @@ const GIST_DESCRIPTION = "tabula-data"; // the single gist that holds all profil
 // root of a single private repo with this name (there is no gist API).
 const FORGEJO_REPO_NAME = "tabula-data";
 
+// The shared bookmarks set lives in ONE special file alongside the profile
+// files (the Chrome bookmarks bar is global, not per-profile). This exact
+// filename is excluded from every profile listing so it never appears in the
+// profile dropdown, rename/delete flows, or migration counts.
+const BOOKMARKS_FILE = "_bookmarks.json";
+
 // URL schemes we cannot reopen and therefore refuse to store in a profile.
 const SKIP_URL_PREFIXES = [
   "chrome://",
@@ -373,6 +379,7 @@ async function listProfiles(token, gistId) {
   const profiles = [];
   for (const fileName of Object.keys(files)) {
     if (!fileName.endsWith(".json")) continue;
+    if (fileName === BOOKMARKS_FILE) continue; // shared bookmarks set, not a profile
     const file = files[fileName];
     let displayName = fileName.replace(/\.json$/, "");
     if (!file.truncated && file.content) {
@@ -680,6 +687,7 @@ class ForgejoProvider {
         // Keep only .json files (dir listing also carries type "dir", etc.).
         if (entry.type !== "file") continue;
         if (!entry.name.endsWith(".json")) continue;
+        if (entry.name === BOOKMARKS_FILE) continue; // shared bookmarks set, not a profile
         // Derive the display name from the filename — reading every file's
         // content just to get displayName would be N extra requests.
         profiles.push({
@@ -868,4 +876,276 @@ function getCurrentTabs() {
 // "current window", so it targets the last-focused normal window by id.
 function getTabsOfWindow(windowId) {
   return readTabsState({ windowId });
+}
+
+/* ------------------------------------------------------------------ *
+ * Bookmarks bar sync (DOM-free — used from both the popup and the worker)
+ *
+ * The Chrome bookmarks bar is a single global folder, so its synced state is
+ * NOT per-profile: it lives in one shared special file (BOOKMARKS_FILE) in the
+ * same gist/repo. Data model:
+ *   { lastModified: ISO, bar: [ node, ... ] }
+ * where a node is either
+ *   { type: "link",   title, url }
+ *   { type: "folder", title, children: [ node, ... ] }   (recursive)
+ * ------------------------------------------------------------------ */
+
+// Resolve the bookmarks-bar folder node. Chrome 129+ tags it with
+// folderType === "bookmarks-bar", which we prefer; older Chrome has no
+// folderType, so we fall back to the bar's stable, documented id "1". We NEVER
+// match by title — the bar's title is localized ("Barra de marcadores", etc.),
+// so a title match would silently break on non-English installs.
+async function getBookmarksBarNode() {
+  const tree = await chromeCall((cb) => chrome.bookmarks.getTree(cb));
+  const root = tree && tree[0];
+  const children = (root && root.children) || [];
+  let bar = children.find((c) => c.folderType === "bookmarks-bar");
+  if (!bar) {
+    const nodes = await chromeCall((cb) => chrome.bookmarks.get("1", cb));
+    bar = nodes && nodes[0];
+  }
+  if (!bar) {
+    throw new TabulaError("Couldn't locate the bookmarks bar.", "generic");
+  }
+  return bar;
+}
+
+// Serialize a list of live chrome.bookmarks nodes into the data model above,
+// preserving order. Links carry a url; folders carry children. Anything with
+// neither (a separator, or an unknown node type) is skipped.
+function serializeBookmarkChildren(children) {
+  const out = [];
+  for (const child of children || []) {
+    if (child.url) {
+      out.push({ type: "link", title: child.title || child.url, url: child.url });
+    } else if (child.children) {
+      out.push({
+        type: "folder",
+        title: child.title || "",
+        children: serializeBookmarkChildren(child.children),
+      });
+    }
+    // else: separator / unknown node — skip it.
+  }
+  return out;
+}
+
+// Read the local bookmarks bar into the shared data model.
+async function readBookmarksBar() {
+  const bar = await getBookmarksBarNode();
+  const sub = await chromeCall((cb) => chrome.bookmarks.getSubTree(bar.id, cb));
+  const node = sub && sub[0];
+  return {
+    lastModified: new Date().toISOString(),
+    bar: node && node.children ? serializeBookmarkChildren(node.children) : [],
+  };
+}
+
+// Read the shared bookmarks file from the backend. The file only exists once
+// something has been pushed, so a not_found is an EMPTY set, not an error.
+async function readBookmarksMaster(provider) {
+  try {
+    return await provider.readProfile(BOOKMARKS_FILE);
+  } catch (e) {
+    if (e && e.code === "not_found") return { lastModified: null, bar: [] };
+    throw e;
+  }
+}
+
+// Write the shared bookmarks file to the backend (create or overwrite).
+function writeBookmarksMaster(provider, data) {
+  return provider.writeProfile(BOOKMARKS_FILE, data);
+}
+
+// Count the links (not folders) anywhere in a serialized bar array.
+function countBookmarkLinks(nodes) {
+  let n = 0;
+  for (const node of nodes || []) {
+    if (node.type === "link") n++;
+    else if (node.type === "folder") n += countBookmarkLinks(node.children || []);
+  }
+  return n;
+}
+
+// Collect every normalized link URL anywhere in a serialized bar tree.
+function collectBookmarkUrls(nodes, set) {
+  for (const node of nodes || []) {
+    if (node.type === "link") set.add(normalizeUrl(node.url));
+    else if (node.type === "folder") collectBookmarkUrls(node.children || [], set);
+  }
+  return set;
+}
+
+// Deep-clone a serialized bar array (so merges never mutate the input).
+function deepCloneBookmarks(nodes) {
+  return (nodes || []).map((n) =>
+    n.type === "folder"
+      ? {
+          type: "folder",
+          title: n.title,
+          children: deepCloneBookmarks(n.children || []),
+        }
+      : { type: "link", title: n.title, url: n.url }
+  );
+}
+
+// Find-or-create a folder by title path (array of titles) within a serialized
+// bar array, returning the children array to push links into. Folders are
+// matched by title along the path and created where missing.
+function ensureBookmarkFolderPath(bar, path) {
+  let level = bar;
+  for (const title of path) {
+    let folder = level.find((n) => n.type === "folder" && n.title === title);
+    if (!folder) {
+      folder = { type: "folder", title, children: [] };
+      level.push(folder);
+    }
+    folder.children = folder.children || [];
+    level = folder.children;
+  }
+  return level;
+}
+
+// Merge local links into master. A local link is added only if its normalized
+// URL appears NOWHERE in master; it's placed at the same folder-title path it
+// had locally, creating matching folders as needed (so a folder that exists
+// only locally is added with its new-link contents). Returns
+// { bar, added, skipped } — master is not mutated.
+function mergeBookmarks(masterBar, localBar) {
+  const bar = deepCloneBookmarks(masterBar || []);
+  const seen = collectBookmarkUrls(bar, new Set());
+  let added = 0;
+  let skipped = 0;
+
+  function walk(nodes, path) {
+    for (const node of nodes || []) {
+      if (node.type === "link") {
+        const key = normalizeUrl(node.url);
+        if (seen.has(key)) {
+          skipped++;
+          continue;
+        }
+        ensureBookmarkFolderPath(bar, path).push({
+          type: "link",
+          title: node.title,
+          url: node.url,
+        });
+        seen.add(key);
+        added++;
+      } else if (node.type === "folder") {
+        walk(node.children || [], path.concat(node.title));
+      }
+    }
+  }
+  walk(localBar || [], []);
+  return { bar, added, skipped };
+}
+
+// Find a child folder of parentId by exact title, or create it. Used by the
+// non-destructive local merge to place links under matching folders.
+async function ensureLocalBookmarkFolder(parentId, title) {
+  const children = await chromeCall((cb) =>
+    chrome.bookmarks.getChildren(parentId, cb)
+  );
+  const match = (children || []).find((c) => !c.url && c.title === title);
+  if (match) return match.id;
+  const created = await chromeCall((cb) =>
+    chrome.bookmarks.create({ parentId, title }, cb)
+  );
+  return created.id;
+}
+
+// Recreate a serialized bar array as live bookmarks under parentId, in order.
+// Returns the number of LINKS created (folders aren't counted). Used by the
+// destructive "replace local" path.
+async function createBookmarkNodes(parentId, nodes) {
+  let links = 0;
+  for (const node of nodes || []) {
+    if (node.type === "link") {
+      await chromeCall((cb) =>
+        chrome.bookmarks.create(
+          { parentId, title: node.title, url: node.url },
+          cb
+        )
+      );
+      links++;
+    } else if (node.type === "folder") {
+      const folder = await chromeCall((cb) =>
+        chrome.bookmarks.create({ parentId, title: node.title }, cb)
+      );
+      links += await createBookmarkNodes(folder.id, node.children || []);
+    }
+  }
+  return links;
+}
+
+// Apply the master bookmark set to the LOCAL bar.
+//   replace=true : DELETE every child of the bar, then recreate master exactly
+//                  (removeTree per child, then create recursively, in order).
+//   replace=false: add only master links whose normalized URL is missing
+//                  locally, placed at their folder path; nothing is removed or
+//                  moved. Folders are materialized lazily — only when a
+//                  descendant link actually lands in them — so the merge never
+//                  leaves empty folders behind.
+// Returns { added, skipped } (replace mode reports the recreated link count and
+// skipped 0).
+async function applyBookmarksToLocal(masterBar, options) {
+  const replace = !!(options && options.replace);
+  const bar = await getBookmarksBarNode();
+
+  if (replace) {
+    const sub = await chromeCall((cb) =>
+      chrome.bookmarks.getSubTree(bar.id, cb)
+    );
+    const node = sub && sub[0];
+    const children = (node && node.children) || [];
+    for (const child of children) {
+      await chromeCall((cb) => chrome.bookmarks.removeTree(child.id, cb));
+    }
+    const added = await createBookmarkNodes(bar.id, masterBar || []);
+    return { added, skipped: 0 };
+  }
+
+  const localData = await readBookmarksBar();
+  const existing = collectBookmarkUrls(localData.bar, new Set());
+  let added = 0;
+  let skipped = 0;
+
+  // getParentId is a lazy resolver: it creates the folder chain up to this
+  // level only when first invoked (i.e. only when a link actually lands here).
+  async function walk(nodes, getParentId) {
+    for (const node of nodes || []) {
+      if (node.type === "link") {
+        const key = normalizeUrl(node.url);
+        if (existing.has(key)) {
+          skipped++;
+          continue;
+        }
+        const parentId = await getParentId();
+        await chromeCall((cb) =>
+          chrome.bookmarks.create(
+            { parentId, title: node.title, url: node.url },
+            cb
+          )
+        );
+        existing.add(key);
+        added++;
+      } else if (node.type === "folder") {
+        let cachedId = null;
+        const resolve = async () => {
+          if (cachedId == null) {
+            cachedId = await ensureLocalBookmarkFolder(
+              await getParentId(),
+              node.title
+            );
+          }
+          return cachedId;
+        };
+        await walk(node.children || [], resolve);
+      }
+    }
+  }
+  const barId = bar.id;
+  await walk(masterBar || [], async () => barId);
+  return { added, skipped };
 }
