@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tabula — Settings</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Tabula Settings</h1>
+      <p class="lead">
+        Tabula stores your tab profiles in a single private GitHub Gist. Connect
+        a Personal Access Token to get started.
+      </p>
+
+      <section class="card">
+        <label class="field-label" for="token">GitHub Personal Access Token</label>
+        <div class="token-row">
+          <input
+            id="token"
+            type="password"
+            class="text-input"
+            placeholder="ghp_… (classic, gist scope)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="toggle-visibility" class="ghost-btn" type="button">
+            Show
+          </button>
+        </div>
+        <p class="hint">
+          The token needs only the <code>gist</code> scope.
+          <a
+            id="how-to-link"
+            href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+            target="_blank"
+            rel="noopener noreferrer"
+            >How to create a token</a
+          >
+        </p>
+
+        <div class="button-row">
+          <button id="save-btn" class="primary-btn" type="button">
+            Validate &amp; Save
+          </button>
+          <button id="disconnect-btn" class="danger-btn hidden" type="button">
+            Disconnect
+          </button>
+        </div>
+
+        <p id="status" class="status-line" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="connected-info" class="card muted hidden">
+        <h2 class="card-title">Connected</h2>
+        <p class="connected-detail">
+          Signed in as <strong id="gh-user">—</strong>.
+        </p>
+        <p class="connected-detail">
+          Gist: <code id="gist-id">—</code>
+        </p>
+      </section>
+
+      <p class="privacy">
+        Your token and tabs go only to api.github.com. Tabula has no servers and
+        collects nothing.
+      </p>
+    </main>
+
+    <script src="common.js"></script>
+    <script src="settings.js"></script>
+  </body>
+</html>

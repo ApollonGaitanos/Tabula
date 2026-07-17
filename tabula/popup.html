@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tabula</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <!-- Shown only when a token is configured. -->
+    <main id="main" class="hidden">
+      <header class="header">
+        <div class="profile-picker">
+          <select id="profile-select" aria-label="Active profile"></select>
+          <button
+            id="rename-btn"
+            class="icon-btn"
+            title="Rename active profile"
+            aria-label="Rename active profile"
+          >
+            ✎
+          </button>
+          <button
+            id="delete-btn"
+            class="icon-btn"
+            title="Delete active profile"
+            aria-label="Delete active profile"
+          >
+            🗑
+          </button>
+        </div>
+        <button
+          id="settings-btn"
+          class="icon-btn"
+          title="Settings"
+          aria-label="Open settings"
+        >
+          ⚙
+        </button>
+      </header>
+
+      <section class="status" aria-label="Sync status">
+        <div class="status-item">
+          <span class="status-label">Local</span>
+          <span id="local-count" class="status-value">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Master</span>
+          <span id="master-count" class="status-value">—</span>
+        </div>
+        <div class="status-item status-modified">
+          <span class="status-label">Updated</span>
+          <span id="master-modified" class="status-value">—</span>
+        </div>
+        <button
+          id="refresh-btn"
+          class="icon-btn"
+          title="Refresh master from Gist"
+          aria-label="Refresh master from Gist"
+        >
+          ↺
+        </button>
+      </section>
+
+      <section class="actions">
+        <button id="push-btn" class="action-btn">Push → master (merge)</button>
+        <button id="pull-btn" class="action-btn">Pull ← master (merge)</button>
+        <button id="replace-local-btn" class="action-btn danger">
+          Replace local ← master
+        </button>
+        <button id="replace-master-btn" class="action-btn danger">
+          Replace master ← local
+        </button>
+      </section>
+
+      <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- Shown when no token is configured. -->
+    <section id="no-token" class="no-token hidden">
+      <p class="no-token-msg">
+        Connect a GitHub token to start syncing your tabs.
+      </p>
+      <button id="open-settings-btn" class="action-btn">Open Settings</button>
+    </section>
+
+    <!-- Generic modal, driven entirely by popup.js. -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-message">
+        <p id="modal-message" class="modal-message"></p>
+        <input id="modal-input" class="modal-input hidden" type="text" />
+        <p id="modal-error" class="modal-error hidden"></p>
+        <div id="modal-buttons" class="modal-buttons"></div>
+      </div>
+    </div>
+
+    <script src="common.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
