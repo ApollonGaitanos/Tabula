@@ -6,9 +6,36 @@
   --accent: #0969da;
   --accent-fg: #ffffff;
   --danger: #cf222e;
+  --danger-solid: #cf222e;
   --danger-bg: #ffebe9;
+  --danger-border: #ffcecb;
+  --on-danger: #ffffff;
   --ok: #1a7f37;
   --hover: #f3f4f6;
+  --status-bg: #f6f8fa;
+  --overlay: rgba(0, 0, 0, 0.35);
+  --shadow: rgba(0, 0, 0, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --border: #3d444d;
+    --accent: #1f6feb;
+    --accent-fg: #ffffff;
+    --danger: #f85149;
+    --danger-solid: #b62324;
+    --danger-bg: #3a1414;
+    --danger-border: #6e2c2c;
+    --on-danger: #ffffff;
+    --ok: #3fb950;
+    --hover: #262b31;
+    --status-bg: #161b22;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --shadow: rgba(0, 0, 0, 0.55);
+  }
 }
 
 * {
@@ -90,7 +117,7 @@ body {
   gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
-  background: #f6f8fa;
+  background: var(--status-bg);
 }
 
 .status-item {
@@ -150,7 +177,7 @@ body {
 
 .action-btn.danger {
   color: var(--danger);
-  border-color: #ffcecb;
+  border-color: var(--danger-border);
 }
 
 .action-btn.danger:hover {
@@ -189,7 +216,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -202,7 +229,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 .modal-message {
@@ -219,6 +246,12 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 8px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.modal-input::placeholder {
+  color: var(--muted);
 }
 
 .modal-error {
@@ -264,9 +297,9 @@ body {
 }
 
 .modal-btn.danger {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #fff;
+  background: var(--danger-solid);
+  border-color: var(--danger-solid);
+  color: var(--on-danger);
 }
 
 .modal-btn.danger:disabled {
