@@ -40,7 +40,14 @@
     }
 
     el.main.classList.remove("hidden");
-    await loadProfiles();
+    // loadProfiles runs on the initial load path (outside guarded()), so its
+    // errors — 401, rate limit, network — must be surfaced here or the popup
+    // would sit on "Loading profiles…" with no feedback.
+    try {
+      await loadProfiles();
+    } catch (e) {
+      showFeedback(describeError(e), "error");
+    }
   }
 
   function cacheElements() {
@@ -408,9 +415,9 @@
       state.activeFile
     );
 
-    const existing = new Set(
-      (master.tabs || []).map((t) => normalizeUrl(t.url))
-    );
+    // Tolerate a hand-edited profile missing its tabs array.
+    master.tabs = master.tabs || [];
+    const existing = new Set(master.tabs.map((t) => normalizeUrl(t.url)));
     let added = 0;
     let skipped = 0;
     for (const tab of local.tabs) {
@@ -475,20 +482,33 @@
     // Chrome requires tabs to exist before chrome.tabs.group(), so we create
     // ALL tabs first (in master order), then group them.
     const created = [];
+    let failed = 0;
     for (const tab of toOpen) {
-      const newTab = await chromeCall((cb) =>
-        chrome.tabs.create({ url: tab.url, active: false, pinned: !!tab.pinned }, cb)
-      );
+      let newTab;
+      try {
+        newTab = await chromeCall((cb) =>
+          chrome.tabs.create({ url: tab.url, active: false, pinned: !!tab.pinned }, cb)
+        );
+      } catch (e) {
+        // Chrome refuses to open some URLs via tabs.create (chrome:// pages,
+        // another extension's pages, javascript:, malformed URLs). One bad URL
+        // must not abort the whole pull — skip it and report the count.
+        failed++;
+        continue;
+      }
       created.push({ tabId: newTab.id, group: tab.group, pinned: !!tab.pinned });
     }
 
     await applyGroups(created, master.groups || {});
 
     await refreshStatus();
-    showFeedback(
-      "Opened " + toOpen.length + plural(toOpen.length, " tab", " tabs") + ".",
-      "ok"
-    );
+    let msg =
+      "Opened " + created.length + plural(created.length, " tab", " tabs") + ".";
+    if (failed) {
+      msg +=
+        " " + failed + plural(failed, " tab", " tabs") + " couldn't be opened.";
+    }
+    showFeedback(msg, failed ? "error" : "ok");
   }
 
   /* ----------------------------------------------------------------- *
@@ -535,13 +555,24 @@
     // Recreate master state exactly, in order. Tabs are created after the
     // survivor tab, so they land in master order; we group afterwards.
     const created = [];
+    let failed = 0;
     for (const tab of master.tabs || []) {
-      const newTab = await chromeCall((cb) =>
-        chrome.tabs.create(
-          { url: tab.url, active: false, pinned: !!tab.pinned },
-          cb
-        )
-      );
+      let newTab;
+      try {
+        newTab = await chromeCall((cb) =>
+          chrome.tabs.create(
+            { url: tab.url, active: false, pinned: !!tab.pinned },
+            cb
+          )
+        );
+      } catch (e) {
+        // Chrome refuses to open some URLs (chrome:// pages, another
+        // extension's pages, javascript:, malformed URLs). Skip the bad one so
+        // one entry can't abort the restore and strand the window on the
+        // throwaway newtab with the originals already closed.
+        failed++;
+        continue;
+      }
       created.push({ tabId: newTab.id, group: tab.group, pinned: !!tab.pinned });
     }
 
@@ -551,21 +582,25 @@
       // Real tabs now keep the window alive; drop the throwaway newtab.
       await chromeCall((cb) => chrome.tabs.remove(survivor.id, cb));
     } else {
-      // Master was empty: keep the survivor as the window's blank tab instead
-      // of closing it (which would close the whole window).
+      // Master was empty (or nothing could be opened): keep the survivor as the
+      // window's blank tab instead of closing it (which would close the whole
+      // window).
       await chromeCall((cb) =>
         chrome.tabs.update(survivor.id, { active: true }, cb)
       );
     }
 
     await refreshStatus();
-    showFeedback(
+    let msg =
       "Local replaced with " +
-        (master.tabs || []).length +
-        plural((master.tabs || []).length, " tab", " tabs") +
-        " from master.",
-      "ok"
-    );
+      created.length +
+      plural(created.length, " tab", " tabs") +
+      " from master.";
+    if (failed) {
+      msg +=
+        " " + failed + plural(failed, " tab", " tabs") + " couldn't be opened.";
+    }
+    showFeedback(msg, failed ? "error" : "ok");
   }
 
   /* ----------------------------------------------------------------- *
