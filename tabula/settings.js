@@ -54,6 +54,7 @@
 
     await reflectStoredState();
     await initAutoSync();
+    await initMigrate();
   }
 
   /* ----------------------------------------------------------------- *
@@ -142,6 +143,330 @@
     } catch (e) {
       /* status line stays hidden */
     }
+  }
+
+  /* ----------------------------------------------------------------- *
+   * Migrate data card
+   *
+   * Copies every profile from one backend to the other. Both credential sets
+   * can live in sync storage at once (the `backend` key only picks the ACTIVE
+   * one), so migration builds a provider for each side from explicit configs
+   * read straight from storage — never from the active `backend` key. The
+   * source is only ever read; nothing on it is written or deleted, and local
+   * tabs are never touched.
+   * ----------------------------------------------------------------- */
+
+  async function initMigrate() {
+    el.migrateDirection = byId("migrate-direction");
+    el.migrateSourceStatus = byId("migrate-source-status");
+    el.migrateTargetStatus = byId("migrate-target-status");
+    el.migrateConnectHint = byId("migrate-connect-hint");
+    el.migrateSwitchActive = byId("migrate-switch-active");
+    el.migrateBtn = byId("migrate-btn");
+    el.migrateStatus = byId("migrate-status");
+
+    // Default the direction to point AWAY FROM the currently-active backend.
+    try {
+      const config = await getBackendConfig();
+      el.migrateDirection.value =
+        config.backend === "forgejo" ? "forgejo-github" : "github-forgejo";
+    } catch (e) {
+      /* leave the HTML default (github-forgejo) */
+    }
+
+    el.migrateDirection.addEventListener("change", () => refreshMigrateState());
+    el.migrateBtn.addEventListener("click", onMigrate);
+
+    await refreshMigrateState();
+  }
+
+  // Read BOTH backends' stored credential sets from sync storage, independent
+  // of which one is active. Mirrors getBackendConfig's key handling but never
+  // consults the `backend` key — presence is judged purely from stored creds.
+  async function readBothCreds() {
+    const items = await storageGet("sync", [
+      "githubToken",
+      "gistId",
+      "forgejoUrl",
+      "forgejoToken",
+      "forgejoOwner",
+    ]);
+    return {
+      github: {
+        backend: "github",
+        present: !!(items.githubToken && items.gistId),
+        githubToken: items.githubToken || null,
+        gistId: items.gistId || null,
+      },
+      forgejo: {
+        backend: "forgejo",
+        present: !!(items.forgejoUrl && items.forgejoToken),
+        forgejoUrl: items.forgejoUrl || null,
+        forgejoToken: items.forgejoToken || null,
+        forgejoOwner: items.forgejoOwner || null,
+      },
+    };
+  }
+
+  // Parse the direction picker into { sourceKey, targetKey, ...labels }.
+  function migrateDirection() {
+    if (el.migrateDirection.value === "forgejo-github") {
+      return {
+        sourceKey: "forgejo",
+        targetKey: "github",
+        sourceLabel: "Forgejo",
+        targetLabel: "GitHub Gist",
+      };
+    }
+    return {
+      sourceKey: "github",
+      targetKey: "forgejo",
+      sourceLabel: "GitHub Gist",
+      targetLabel: "Forgejo",
+    };
+  }
+
+  // Refresh the two connection lines and the Migrate button's enabled state to
+  // match the current direction + stored creds. Safe to call before the card is
+  // wired (no-ops) and after any change to stored connections.
+  async function refreshMigrateState() {
+    if (!el.migrateBtn) return;
+    let creds;
+    try {
+      creds = await readBothCreds();
+    } catch (e) {
+      setMigrateStatus(describeError(e), "error");
+      el.migrateBtn.disabled = true;
+      return;
+    }
+    const dir = migrateDirection();
+    const src = creds[dir.sourceKey];
+    const tgt = creds[dir.targetKey];
+
+    setConnLine(el.migrateSourceStatus, "Source", dir.sourceLabel, src.present);
+    setConnLine(el.migrateTargetStatus, "Target", dir.targetLabel, tgt.present);
+
+    const ready = src.present && tgt.present;
+    el.migrateBtn.disabled = !ready;
+
+    if (ready) {
+      el.migrateConnectHint.classList.add("hidden");
+      el.migrateConnectHint.textContent = "";
+    } else {
+      const missing = [];
+      if (!src.present) missing.push(dir.sourceLabel);
+      if (!tgt.present) missing.push(dir.targetLabel);
+      el.migrateConnectHint.classList.remove("hidden");
+      el.migrateConnectHint.textContent =
+        "Connect " +
+        missing.join(" and ") +
+        " first with the backend selector above (Validate & Save). Doing so" +
+        " switches your active backend — you can switch it back here after the" +
+        " migration, or with the selector.";
+    }
+  }
+
+  function setConnLine(node, role, label, present) {
+    node.textContent =
+      role + " (" + label + "): " + (present ? "connected" : "not connected");
+    node.classList.toggle("ok", present);
+    node.classList.toggle("error", !present);
+  }
+
+  async function onMigrate() {
+    // Snapshot the "switch active backend" preference BEFORE the run starts.
+    const switchActive = el.migrateSwitchActive.checked;
+
+    let creds;
+    try {
+      creds = await readBothCreds();
+    } catch (e) {
+      setMigrateStatus(describeError(e), "error");
+      return;
+    }
+    const dir = migrateDirection();
+    const src = creds[dir.sourceKey];
+    const tgt = creds[dir.targetKey];
+
+    if (!src.present || !tgt.present) {
+      setMigrateStatus("Both backends must be connected first.", "error");
+      return;
+    }
+
+    // Native confirm is safe here: Settings is a full tab, not a popup, so a
+    // native dialog won't dismiss the page the way it would in the action popup.
+    const ok = window.confirm(
+      "Migrate all profiles from " +
+        dir.sourceLabel +
+        " to " +
+        dir.targetLabel +
+        "?\n\n" +
+        "• Every profile is COPIED " +
+        dir.sourceLabel +
+        " → " +
+        dir.targetLabel +
+        ".\n" +
+        "• Target files with the same name WILL BE OVERWRITTEN.\n" +
+        "• The source (" +
+        dir.sourceLabel +
+        ") is never modified, and your local tabs are never touched."
+    );
+    if (!ok) {
+      setMigrateStatus("Migration cancelled.", "");
+      return;
+    }
+
+    el.migrateBtn.disabled = true;
+    el.migrateDirection.disabled = true;
+    try {
+      // Exactly one side is always Forgejo (both directions cross backends). Its
+      // host is a runtime-granted optional permission — ensure it BEFORE any
+      // fetch, inside this click-handler chain so the user gesture is still
+      // valid (same timing rule as onSaveForgejo).
+      const forgejoCfg = dir.sourceKey === "forgejo" ? src : tgt;
+      let pattern;
+      try {
+        pattern = forgejoOriginPattern(forgejoCfg.forgejoUrl);
+      } catch (e) {
+        setMigrateStatus(
+          "The stored Forgejo URL is invalid. Reconnect Forgejo in the" +
+            " connection card above.",
+          "error"
+        );
+        return;
+      }
+      let granted = false;
+      try {
+        granted = await permissionsContains([pattern]);
+      } catch (e) {
+        granted = false;
+      }
+      if (!granted) {
+        setMigrateStatus(
+          "Requesting access to " + forgejoCfg.forgejoUrl + "…",
+          "working"
+        );
+        try {
+          granted = await permissionsRequest([pattern]);
+        } catch (e) {
+          setMigrateStatus(describeError(e), "error");
+          return;
+        }
+        if (!granted) {
+          setMigrateStatus(
+            "Permission to access " +
+              forgejoCfg.forgejoUrl +
+              " was declined. Nothing was migrated.",
+            "error"
+          );
+          return;
+        }
+      }
+
+      // Build both providers from explicit configs (NOT the active backend).
+      const source = makeProvider(src);
+      const target = makeProvider(tgt);
+
+      // A Forgejo source needs its owner resolved before file paths can be
+      // built; verify it if the stored owner is somehow absent.
+      if (src.backend === "forgejo" && !src.forgejoOwner) {
+        setMigrateStatus("Verifying " + dir.sourceLabel + "…", "working");
+        await source.verify();
+      }
+
+      // Verify the TARGET token, then make sure its container (gist/repo) exists.
+      setMigrateStatus("Verifying " + dir.targetLabel + "…", "working");
+      const targetUser = await target.verify();
+
+      setMigrateStatus("Preparing " + dir.targetLabel + " storage…", "working");
+      await target.ensureContainer();
+
+      setMigrateStatus(
+        "Reading profiles from " + dir.sourceLabel + "…",
+        "working"
+      );
+      const profiles = await source.listProfiles();
+
+      if (!profiles.length) {
+        setMigrateStatus(
+          "No profiles found on " + dir.sourceLabel + " — nothing to migrate.",
+          "ok"
+        );
+        return;
+      }
+
+      let migrated = 0;
+      const failures = [];
+      for (let i = 0; i < profiles.length; i++) {
+        const p = profiles[i];
+        setMigrateStatus(
+          "Migrating " +
+            (i + 1) +
+            "/" +
+            profiles.length +
+            ": " +
+            p.displayName +
+            "…",
+          "working"
+        );
+        // Per-profile isolation: one failure collects its name and moves on so
+        // the rest still migrate.
+        try {
+          const profile = await source.readProfile(p.fileName);
+          await target.writeProfile(p.fileName, profile);
+          migrated++;
+        } catch (e) {
+          failures.push(p.displayName);
+        }
+      }
+
+      let msg =
+        "Migrated " + migrated + " profile" + (migrated === 1 ? "" : "s") + ".";
+      const kind = failures.length ? "error" : "ok";
+      if (failures.length) {
+        msg +=
+          " " +
+          failures.length +
+          " failed: " +
+          failures.join(", ") +
+          ".";
+      }
+
+      // Only offer to switch the active backend after a fully clean run.
+      if (!failures.length && switchActive) {
+        try {
+          const toSet = { backend: tgt.backend };
+          if (tgt.backend === "forgejo") {
+            // The provider needs forgejoOwner stored; take it from verify().
+            toSet.forgejoOwner =
+              target.owner ||
+              (targetUser && targetUser.login) ||
+              tgt.forgejoOwner ||
+              null;
+          }
+          await storageSet("sync", toSet);
+          msg += " Active backend switched to " + dir.targetLabel + ".";
+          // Reflect the switch in the connection card + backend selector.
+          await reflectStoredState();
+        } catch (e) {
+          msg += " (Couldn't switch active backend: " + describeError(e) + ")";
+        }
+      }
+
+      setMigrateStatus(msg, kind);
+    } catch (e) {
+      setMigrateStatus(describeError(e), "error");
+    } finally {
+      el.migrateDirection.disabled = false;
+      // Restore the button's correct enabled state without clobbering the final
+      // status line (refreshMigrateState only writes status on a storage error).
+      await refreshMigrateState();
+    }
+  }
+
+  function setMigrateStatus(text, kind) {
+    el.migrateStatus.textContent = text || "";
+    el.migrateStatus.className = "status-line" + (kind ? " " + kind : "");
   }
 
   /* ----------------------------------------------------------------- *
@@ -264,6 +589,7 @@
           ". You're ready to sync.",
         "ok"
       );
+      await refreshMigrateState();
     } catch (e) {
       setStatus(describeError(e), "error");
     } finally {
@@ -338,6 +664,7 @@
         "Connected to " + url + " as " + login + ". You're ready to sync.",
         "ok"
       );
+      await refreshMigrateState();
     } catch (e) {
       setStatus(describeError(e), "error");
     } finally {
@@ -374,6 +701,7 @@
       }
       el.connectedInfo.classList.add("hidden");
       el.disconnect.classList.add("hidden");
+      await refreshMigrateState();
     } catch (e) {
       setStatus(describeError(e), "error");
     } finally {

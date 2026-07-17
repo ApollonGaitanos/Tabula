@@ -566,7 +566,11 @@
       created.push({ tabId: newTab.id, group: tab.group, pinned: !!tab.pinned });
     }
 
-    await applyGroups(created, master.groups || {});
+    // reuseExisting=true: Pull adds tabs alongside whatever's already open, so
+    // if a group with this title already exists in the window (e.g. the user
+    // never closed "Test" from a previous pull), fold the new tabs into it
+    // instead of stacking a second same-titled group beside it.
+    await applyGroups(created, master.groups || {}, true);
 
     await refreshStatus();
     let msg =
@@ -660,6 +664,12 @@
         return;
       }
 
+      // reuseExisting is omitted (false): Replace local must keep creating
+      // fresh groups. Any same-titled group currently in the window belongs
+      // to the outgoing tabs and is destroyed once oldIds are removed below —
+      // reusing it would fold master's new tabs into a group that's about to
+      // vanish (or, worse, drag them into its old position), breaking the
+      // exact-layout guarantee this operation promises.
       await applyGroups(created, master.groups || {});
 
       // The new tabs now populate the window; removing the originals is the LAST
@@ -761,7 +771,13 @@
 
   // Given created tabs [{tabId, group, pinned}] and group metadata
   // {title:{color,collapsed}}, group tabs by title then style each group.
-  async function applyGroups(created, groupsMeta) {
+  //
+  // reuseExisting (default false) controls whether a same-titled group
+  // already in the window is reused instead of creating a new one. Chrome
+  // happily creates multiple groups with identical titles in one window, so
+  // always creating fresh groups (as Pull used to) piles up duplicate
+  // "Test", "Test", "Test" groups every time the same title reappears.
+  async function applyGroups(created, groupsMeta, reuseExisting) {
     const byTitle = {};
     for (const item of created) {
       // Pinned tabs cannot belong to a tab group — skip them here.
@@ -770,9 +786,33 @@
     }
 
     for (const title of Object.keys(byTitle)) {
-      const groupId = await chromeCall((cb) =>
-        chrome.tabs.group({ tabIds: byTitle[title] }, cb)
-      );
+      let groupId = null;
+      if (reuseExisting) {
+        // Look for a group with this exact title already in the window.
+        // Titles aren't unique — Chrome lets a window hold several groups
+        // named e.g. "Test" — so this can match more than one; we deliberately
+        // pick the first and fold the new tabs into it rather than trying to
+        // pick "the right one" (there's no signal to disambiguate on).
+        const existing = await chromeCall((cb) =>
+          chrome.tabGroups.query(
+            { title, windowId: chrome.windows.WINDOW_ID_CURRENT },
+            cb
+          )
+        );
+        if (existing && existing.length > 0) {
+          groupId = existing[0].id;
+          await chromeCall((cb) =>
+            chrome.tabs.group({ tabIds: byTitle[title], groupId }, cb)
+          );
+        }
+      }
+      if (groupId == null) {
+        groupId = await chromeCall((cb) =>
+          chrome.tabs.group({ tabIds: byTitle[title] }, cb)
+        );
+      }
+      // Master is the source of truth for color/collapsed on every pull, so
+      // this runs whether the group was just created or reused.
       const meta = groupsMeta[title] || {};
       const updateProps = { title };
       if (meta.color) updateProps.color = meta.color;

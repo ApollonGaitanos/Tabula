@@ -318,6 +318,29 @@ a {
   border-top: 1px solid var(--border);
 }
 
+/* Migrate data card */
+.select-input.full {
+  width: 100%;
+}
+
+.migrate-conn {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.migrate-conn.ok {
+  color: var(--ok);
+}
+
+.migrate-conn.error {
+  color: var(--danger);
+}
+
+.switch-label.migrate-switch {
+  margin-top: 16px;
+}
+
 .hidden {
   display: none !important;
 }

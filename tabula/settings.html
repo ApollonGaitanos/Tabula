@@ -176,6 +176,40 @@
         <p id="auto-sync-status" class="status-line auto-status hidden"></p>
       </section>
 
+      <section class="card">
+        <h2 class="card-title">Migrate data</h2>
+        <p class="hint auto-lead">
+          Copy every profile from one backend to the other. Profiles are
+          <strong>copied</strong> — the source is never changed, and your local
+          tabs are never touched. Files with the same name on the target are
+          overwritten.
+        </p>
+
+        <label class="field-label" for="migrate-direction">Direction</label>
+        <select id="migrate-direction" class="select-input full">
+          <option value="github-forgejo">GitHub Gist → Forgejo</option>
+          <option value="forgejo-github">Forgejo → GitHub Gist</option>
+        </select>
+
+        <p id="migrate-source-status" class="migrate-conn"></p>
+        <p id="migrate-target-status" class="migrate-conn"></p>
+
+        <p id="migrate-connect-hint" class="hint warn hidden"></p>
+
+        <label class="switch-label migrate-switch" id="migrate-switch-row">
+          <input type="checkbox" id="migrate-switch-active" checked />
+          <span>Switch my active backend to the target after a successful migration</span>
+        </label>
+
+        <div class="button-row">
+          <button id="migrate-btn" class="primary-btn" type="button">
+            Migrate
+          </button>
+        </div>
+
+        <p id="migrate-status" class="status-line" role="status" aria-live="polite"></p>
+      </section>
+
       <p id="privacy-note" class="privacy">
         Your token and tabs go only to api.github.com. Tabula has no servers and
         collects nothing.
