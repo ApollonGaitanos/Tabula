@@ -4,7 +4,10 @@
   "version": "1.0.0",
   "description": "Push, pull, and merge your tabs and tab groups with a master list stored in your own private GitHub Gist. Manual, explicit, no tracking.",
   "permissions": ["tabs", "tabGroups", "storage"],
-  "host_permissions": ["https://api.github.com/*"],
+  "host_permissions": [
+    "https://api.github.com/*",
+    "https://gist.githubusercontent.com/*"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Tabula — Manual Tab Sync",

@@ -304,9 +304,13 @@ async function listProfiles(token, gistId) {
   return profiles;
 }
 
-// Read one profile's full content. The gist list endpoint returns truncated
-// content for large files, so we ALWAYS fetch the file's raw_url for the
-// authoritative body.
+// Read one profile's full content. The gist metadata endpoint returns the
+// file's content inline (and un-truncated) for files up to ~1 MB, so in the
+// common case we use that directly. Only when the file is truncated do we
+// fall back to fetching file.raw_url, which lives on
+// gist.githubusercontent.com (hence the extra host permission) — that
+// request is sent without the Authorization header since raw URLs for
+// secret gists are link-accessible on their own and don't need the token.
 async function readProfile(token, gistId, fileName) {
   const gist = await getGist(token, gistId);
   const file = (gist.files || {})[fileName];
@@ -317,12 +321,18 @@ async function readProfile(token, gistId, fileName) {
     );
   }
 
+  if (!file.truncated && file.content) {
+    try {
+      return JSON.parse(file.content);
+    } catch (e) {
+      throw new TabulaError("Profile file is corrupt (invalid JSON).", "generic");
+    }
+  }
+
   let text;
   try {
-    // raw_url is public-per-gist but time-limited; still send auth header.
-    const res = await fetch(file.raw_url, {
-      headers: { Authorization: "Bearer " + token },
-    });
+    // raw_url does not need auth: don't send the token to a second host.
+    const res = await fetch(file.raw_url);
     if (!res.ok) await throwForResponse(res);
     text = await res.text();
   } catch (e) {
