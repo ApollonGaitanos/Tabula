@@ -53,6 +53,95 @@
     );
 
     await reflectStoredState();
+    await initAutoSync();
+  }
+
+  /* ----------------------------------------------------------------- *
+   * Automatic sync card (Feature A timer + Feature B switch)
+   *
+   * Settings save immediately on every change (no button); the background
+   * worker reacts to the sync-storage write via chrome.storage.onChanged.
+   * ----------------------------------------------------------------- */
+
+  async function initAutoSync() {
+    el.autoEnabled = byId("auto-sync-enabled");
+    el.autoMinutes = byId("auto-sync-minutes");
+    el.autoMode = byId("auto-sync-mode");
+    el.switchEnabled = byId("switch-sync-enabled");
+    el.switchMode = byId("switch-sync-mode");
+    el.autoStatus = byId("auto-sync-status");
+
+    // Populate controls from stored values (defaults applied where absent).
+    try {
+      const s = await storageGet("sync", [
+        "autoSyncEnabled",
+        "autoSyncMinutes",
+        "autoSyncMode",
+        "switchSyncEnabled",
+        "switchSyncMode",
+      ]);
+      el.autoEnabled.checked = !!s.autoSyncEnabled;
+      const minutes = Number(s.autoSyncMinutes);
+      el.autoMinutes.value = String(
+        Number.isFinite(minutes) && minutes >= 1 ? minutes : 15
+      );
+      el.autoMode.value = s.autoSyncMode === "replace" ? "replace" : "push";
+      el.switchEnabled.checked = !!s.switchSyncEnabled;
+      el.switchMode.value =
+        s.switchSyncMode === "replace" ? "replace" : "push";
+    } catch (e) {
+      setStatus(describeError(e), "error");
+    }
+
+    // Save immediately on any change.
+    [
+      el.autoEnabled,
+      el.autoMinutes,
+      el.autoMode,
+      el.switchEnabled,
+      el.switchMode,
+    ].forEach((c) => c.addEventListener("change", saveAutoSync));
+
+    // Static display of the last background sync (no polling).
+    await showLastAutoSync();
+  }
+
+  async function saveAutoSync() {
+    // Clamp minutes to the chrome.alarms minimum of 1 and reflect the clamp.
+    let minutes = parseInt(el.autoMinutes.value, 10);
+    if (!Number.isFinite(minutes) || minutes < 1) minutes = 1;
+    el.autoMinutes.value = String(minutes);
+
+    try {
+      await storageSet("sync", {
+        autoSyncEnabled: el.autoEnabled.checked,
+        autoSyncMinutes: minutes,
+        autoSyncMode: el.autoMode.value === "replace" ? "replace" : "push",
+        switchSyncEnabled: el.switchEnabled.checked,
+        switchSyncMode: el.switchMode.value === "replace" ? "replace" : "push",
+      });
+      setStatus("Automatic sync settings saved.", "ok");
+    } catch (e) {
+      setStatus(describeError(e), "error");
+    }
+  }
+
+  // One-shot render of chrome.storage.local `lastAutoSync` on page load.
+  async function showLastAutoSync() {
+    try {
+      const { lastAutoSync } = await storageGet("local", ["lastAutoSync"]);
+      if (!lastAutoSync) return;
+      el.autoStatus.classList.remove("hidden");
+      el.autoStatus.textContent =
+        "Last auto-sync " +
+        formatTimestamp(lastAutoSync.at) +
+        " — " +
+        (lastAutoSync.message || (lastAutoSync.ok ? "OK" : "failed"));
+      el.autoStatus.classList.toggle("ok", !!lastAutoSync.ok);
+      el.autoStatus.classList.toggle("error", !lastAutoSync.ok);
+    } catch (e) {
+      /* status line stays hidden */
+    }
   }
 
   /* ----------------------------------------------------------------- *

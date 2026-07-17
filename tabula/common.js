@@ -804,12 +804,12 @@ function chromeCall(fn) {
   });
 }
 
-// Read the current window's syncable state.
-// Returns { tabs: [{url,title,group,pinned}], groups: {title:{color,collapsed}} }.
-// Tab order matches the tab strip (index order), which is meaningful.
-async function getCurrentTabs() {
+// Build syncable state from a chrome.tabs.query descriptor. Shared by the
+// current-window reader (popup) and the explicit-window reader (background
+// auto-sync). Returns { tabs, groups } as documented on getCurrentTabs.
+async function readTabsState(queryInfo) {
   const rawTabs = await chromeCall((cb) =>
-    chrome.tabs.query({ currentWindow: true }, cb)
+    chrome.tabs.query(queryInfo, cb)
   );
   // chrome.tabs.query returns in index order already, but sort defensively.
   rawTabs.sort((a, b) => a.index - b.index);
@@ -853,4 +853,19 @@ async function getCurrentTabs() {
   }
 
   return { tabs, groups };
+}
+
+// Read the current window's syncable state.
+// Returns { tabs: [{url,title,group,pinned}], groups: {title:{color,collapsed}} }.
+// Tab order matches the tab strip (index order), which is meaningful.
+// Uses { currentWindow: true } so the popup path is byte-for-byte unchanged.
+function getCurrentTabs() {
+  return readTabsState({ currentWindow: true });
+}
+
+// Read a specific window's syncable state — same rules as getCurrentTabs but
+// scoped to an explicit window id. The background auto-sync worker has no
+// "current window", so it targets the last-focused normal window by id.
+function getTabsOfWindow(windowId) {
+  return readTabsState({ windowId });
 }

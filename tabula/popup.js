@@ -218,9 +218,56 @@
       await guarded(onNewProfile);
       return;
     }
+
+    // Feature B: optionally sync the OUTGOING profile before we switch away.
+    // Runs only when there is a real previous profile that differs from the
+    // target. A failure must NOT block the switch, so we capture the outcome
+    // and surface it AFTER refreshStatus (which would otherwise clear it).
+    const outgoing = state.activeFile;
+    let switchNote = null;
+    if (outgoing && outgoing !== value) {
+      switchNote = await maybeSyncOnSwitch(outgoing);
+    }
+
     state.activeFile = value;
     await setActiveProfile(value);
     await guarded(refreshStatus);
+
+    if (switchNote) showFeedback(switchNote.text, switchNote.kind);
+  }
+
+  // Feature B core: if "sync on switch" is enabled, sync this window into the
+  // outgoing profile using the chosen mode. Never throws and never blocks —
+  // returns { text, kind } describing what happened, or null when disabled.
+  async function maybeSyncOnSwitch(outgoingFile) {
+    let settings;
+    try {
+      settings = await storageGet("sync", [
+        "switchSyncEnabled",
+        "switchSyncMode",
+      ]);
+    } catch (e) {
+      return null;
+    }
+    if (!settings.switchSyncEnabled) return null;
+
+    const meta = state.profiles.find((p) => p.fileName === outgoingFile);
+    const label = meta ? meta.displayName : outgoingFile;
+    const mode = settings.switchSyncMode === "replace" ? "replace" : "push";
+    showFeedback("Syncing '" + label + "' before switching…");
+    try {
+      if (mode === "replace") {
+        await replaceMasterFile(outgoingFile);
+      } else {
+        await pushLocalToProfile(outgoingFile);
+      }
+      return { text: "Synced '" + label + "' before switching.", kind: "ok" };
+    } catch (e) {
+      return {
+        text: "Couldn't sync '" + label + "': " + describeError(e),
+        kind: "error",
+      };
+    }
   }
 
   async function promptFirstProfile() {
@@ -421,12 +468,14 @@
    * Operation 1: Push (merge current tabs into master)
    * ----------------------------------------------------------------- */
 
-  async function doPush() {
-    requireActive();
-    showFeedback("Pushing to master…");
+  // Merge the current window's tabs into a NAMED profile file (Push semantics).
+  // No DOM, no confirmation — shared by the Push button and Feature B's
+  // sync-on-switch (which targets the OUTGOING profile). Returns
+  // { master, added, skipped }.
+  async function pushLocalToProfile(fileName) {
     const local = await getCurrentTabs();
     // Always re-fetch master immediately before writing.
-    const master = await state.provider.readProfile(state.activeFile);
+    const master = await state.provider.readProfile(fileName);
 
     // Tolerate a hand-edited profile missing its tabs array.
     master.tabs = master.tabs || [];
@@ -451,7 +500,16 @@
     }
 
     master.lastModified = new Date().toISOString();
-    await state.provider.writeProfile(state.activeFile, master);
+    await state.provider.writeProfile(fileName, master);
+    return { master, added, skipped };
+  }
+
+  async function doPush() {
+    requireActive();
+    showFeedback("Pushing to master…");
+    const { master, added, skipped } = await pushLocalToProfile(
+      state.activeFile
+    );
     state.master = master;
     el.masterCount.textContent = String(master.tabs.length);
     el.masterModified.textContent = formatTimestamp(master.lastModified);
@@ -664,23 +722,37 @@
     if (!confirmed) return;
 
     showFeedback("Replacing master…");
-    const profile = {
-      displayName: active.displayName,
-      lastModified: new Date().toISOString(),
-      tabs: local.tabs,
-      groups: local.groups,
-    };
-    await state.provider.writeProfile(state.activeFile, profile);
+    const profile = await replaceMasterFile(state.activeFile);
     state.master = profile;
     el.masterCount.textContent = String(profile.tabs.length);
     el.masterModified.textContent = formatTimestamp(profile.lastModified);
     showFeedback(
       "Master replaced with " +
-        local.tabs.length +
-        plural(local.tabs.length, " tab", " tabs") +
+        profile.tabs.length +
+        plural(profile.tabs.length, " tab", " tabs") +
         " from this window.",
       "ok"
     );
+  }
+
+  // Overwrite a NAMED profile file with the current window's full state
+  // (Replace master semantics), keeping that profile's existing display name.
+  // No DOM, no confirmation — shared by the Replace-master button and Feature
+  // B's sync-on-switch. Returns the written profile.
+  async function replaceMasterFile(fileName) {
+    const local = await getCurrentTabs();
+    const meta = state.profiles.find((p) => p.fileName === fileName);
+    const displayName = meta
+      ? meta.displayName
+      : fileName.replace(/\.json$/, "");
+    const profile = {
+      displayName,
+      lastModified: new Date().toISOString(),
+      tabs: local.tabs,
+      groups: local.groups,
+    };
+    await state.provider.writeProfile(fileName, profile);
+    return profile;
   }
 
   /* ----------------------------------------------------------------- *

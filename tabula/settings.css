@@ -254,6 +254,70 @@ a {
   line-height: 1.5;
 }
 
+/* Automatic sync card */
+.auto-lead {
+  margin-top: 0;
+  margin-bottom: 14px;
+}
+
+.switch-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.switch-label input {
+  margin: 0;
+}
+
+/* Second toggle sits below the first block, separated by a rule. */
+.switch-label.spaced-top {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.auto-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  margin-top: 12px;
+}
+
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.num-input,
+.select-input {
+  padding: 6px 8px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--fg);
+}
+
+.num-input {
+  width: 64px;
+}
+
+.hint.warn {
+  color: var(--danger);
+}
+
+.auto-status {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 .hidden {
   display: none !important;
 }

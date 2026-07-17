@@ -114,6 +114,68 @@
         </p>
       </section>
 
+      <section class="card">
+        <h2 class="card-title">Automatic sync</h2>
+        <p class="hint auto-lead">
+          Tabula normally syncs only when you press a button. These options let
+          a background worker sync for you. Both toggles are independent and may
+          be on at once.
+        </p>
+
+        <!-- Timed background sync -->
+        <label class="switch-label">
+          <input type="checkbox" id="auto-sync-enabled" />
+          <span>Sync on a timer</span>
+        </label>
+        <div class="auto-controls">
+          <label class="inline-field" for="auto-sync-minutes">
+            Every
+            <input
+              id="auto-sync-minutes"
+              type="number"
+              class="num-input"
+              min="1"
+              step="1"
+              value="15"
+            />
+            minutes
+          </label>
+          <label class="inline-field" for="auto-sync-mode">
+            Mode
+            <select id="auto-sync-mode" class="select-input">
+              <option value="push">Push → master (merge)</option>
+              <option value="replace">Replace master ← local</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint warn">
+          <strong>Replace</strong> overwrites master with the focused window's
+          tabs every interval — anything only in master is lost.
+        </p>
+
+        <!-- Sync on profile switch -->
+        <label class="switch-label spaced-top">
+          <input type="checkbox" id="switch-sync-enabled" />
+          <span>Sync when switching profiles</span>
+        </label>
+        <div class="auto-controls">
+          <label class="inline-field" for="switch-sync-mode">
+            Mode
+            <select id="switch-sync-mode" class="select-input">
+              <option value="push">Push → outgoing master (merge)</option>
+              <option value="replace">Replace outgoing master ← local</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint">
+          Before switching, sync this window into the profile you're leaving.
+          <strong>Replace</strong> overwrites that outgoing profile's master
+          with the current window.
+        </p>
+
+        <p id="auto-sync-status" class="status-line auto-status hidden"></p>
+      </section>
+
       <p id="privacy-note" class="privacy">
         Your token and tabs go only to api.github.com. Tabula has no servers and
         collects nothing.
