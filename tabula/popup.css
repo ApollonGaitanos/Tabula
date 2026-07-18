@@ -184,6 +184,74 @@ body {
   background: var(--danger-bg);
 }
 
+/* Primary (accent) action — the prominent "Use this profile" button. */
+.action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.action-btn.primary:hover {
+  filter: brightness(1.05);
+}
+
+/* Primary actions block: the two everyday buttons above the Advanced section. */
+.primary-actions {
+  padding-bottom: 12px;
+}
+
+/* Preview hint — muted note shown while previewing a not-in-use profile. */
+.preview-hint {
+  margin: 0;
+  padding: 8px 12px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Advanced (collapsible) section — native details/summary styled to match. */
+.advanced {
+  border-top: 1px solid var(--border);
+}
+
+.advanced > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 10px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 9px;
+}
+
+.advanced[open] > summary::before {
+  content: "▾";
+}
+
+.advanced > summary:hover {
+  color: var(--fg);
+}
+
+/* The tab-actions block inside Advanced needs no extra top padding — the
+   summary already provides separation. The bookmarks block keeps its own
+   border-top/padding to stay visually separated. */
+.advanced > .actions:not(.bookmarks-actions) {
+  padding-top: 0;
+}
+
 /* Bookmarks bar section — visually separated, compact variant of the actions */
 .bookmarks-actions {
   gap: 6px;

@@ -7,8 +7,10 @@
  * (it only runs while open). A single chrome.alarms-driven worker is the
  * minimal way to do that. It is READ-ONLY toward the browser: it reads a
  * window's tabs and writes to the backend. It NEVER opens windows, shows
- * dialogs, or closes/moves local tabs. Feature B (sync-on-profile-switch) lives
- * in the popup, not here.
+ * dialogs, or closes/moves local tabs. It always targets the IN-USE profile
+ * (activeProfile in storage.local); previewing a profile in the popup never
+ * changes that. The outgoing-profile sync tied to "Use this profile" lives in
+ * the popup, not here.
  *
  * This is a classic (non-module) worker: it pulls in the shared helpers via
  * importScripts. common.js is DOM-free, so every helper it defines

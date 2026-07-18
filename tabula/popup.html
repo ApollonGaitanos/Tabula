@@ -12,20 +12,20 @@
     <main id="main" class="hidden">
       <header class="header">
         <div class="profile-picker">
-          <select id="profile-select" aria-label="Active profile"></select>
+          <select id="profile-select" aria-label="Preview profile"></select>
           <button
             id="rename-btn"
             class="icon-btn"
-            title="Rename active profile"
-            aria-label="Rename active profile"
+            title="Rename selected profile"
+            aria-label="Rename selected profile"
           >
             ✎
           </button>
           <button
             id="delete-btn"
             class="icon-btn"
-            title="Delete active profile"
-            aria-label="Delete active profile"
+            title="Delete selected profile"
+            aria-label="Delete selected profile"
           >
             🗑
           </button>
@@ -63,32 +63,49 @@
         </button>
       </section>
 
-      <section class="actions">
-        <button id="push-btn" class="action-btn">Push → master (merge)</button>
-        <button id="pull-btn" class="action-btn">Pull ← master (merge)</button>
-        <button id="replace-local-btn" class="action-btn danger">
-          Replace local ← master
+      <!-- Muted note shown only while previewing a profile that isn't in use. -->
+      <p id="preview-hint" class="preview-hint hidden"></p>
+
+      <!-- Primary actions: the two everyday buttons. -->
+      <section class="actions primary-actions">
+        <button id="use-profile-btn" class="action-btn primary">
+          Use this profile
         </button>
-        <button id="replace-master-btn" class="action-btn danger">
-          Replace master ← local
-        </button>
+        <button id="update-btn" class="action-btn">Update</button>
       </section>
 
-      <section class="actions bookmarks-actions" aria-label="Bookmarks bar sync">
-        <h2 class="section-heading">Bookmarks bar</h2>
-        <button id="bm-push-btn" class="action-btn compact">
-          Push → master (merge)
-        </button>
-        <button id="bm-pull-btn" class="action-btn compact">
-          Pull ← master (merge)
-        </button>
-        <button id="bm-replace-local-btn" class="action-btn compact danger">
-          Replace local ← master
-        </button>
-        <button id="bm-replace-master-btn" class="action-btn compact danger">
-          Replace master ← local
-        </button>
-      </section>
+      <!-- Power-user operations, collapsed by default. All prior tab and
+           bookmark merge/replace actions live here, unchanged. -->
+      <details class="advanced">
+        <summary>Advanced (merge &amp; bookmarks)</summary>
+
+        <section class="actions" aria-label="Tab sync">
+          <button id="push-btn" class="action-btn">Push → master (merge)</button>
+          <button id="pull-btn" class="action-btn">Pull ← master (merge)</button>
+          <button id="replace-local-btn" class="action-btn danger">
+            Replace local ← master
+          </button>
+          <button id="replace-master-btn" class="action-btn danger">
+            Replace master ← local
+          </button>
+        </section>
+
+        <section class="actions bookmarks-actions" aria-label="Bookmarks bar sync">
+          <h2 class="section-heading">Bookmarks bar</h2>
+          <button id="bm-push-btn" class="action-btn compact">
+            Push → master (merge)
+          </button>
+          <button id="bm-pull-btn" class="action-btn compact">
+            Pull ← master (merge)
+          </button>
+          <button id="bm-replace-local-btn" class="action-btn compact danger">
+            Replace local ← master
+          </button>
+          <button id="bm-replace-master-btn" class="action-btn compact danger">
+            Replace master ← local
+          </button>
+        </section>
+      </details>
 
       <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
     </main>

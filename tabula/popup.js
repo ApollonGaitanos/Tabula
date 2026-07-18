@@ -13,7 +13,15 @@
     provider: null, // backend provider (GitHub Gist or Forgejo)
     backend: "github", // "github" | "forgejo" — also scopes the display cache
     profiles: [], // [{ fileName, displayName }]
-    activeFile: null, // profile filename of the active profile
+    // The "in use" profile: persisted as activeProfile in storage.local and the
+    // sole target of background auto-sync. "Update" acts on it; "Use this
+    // profile" changes it.
+    inUseFile: null,
+    // The "previewed" profile: the dropdown selection. In-memory ONLY — it
+    // resets to inUseFile on every popup open. Picking a profile in the dropdown
+    // only previews it (status row + rename/delete + Advanced ops); it never
+    // writes storage, changes tabs, or syncs.
+    previewFile: null,
     master: null, // last-fetched master profile object (for display)
     busy: false,
   };
@@ -84,9 +92,12 @@
     el.deleteBtn = byId("delete-btn");
     el.settingsBtn = byId("settings-btn");
     el.refreshBtn = byId("refresh-btn");
+    el.previewHint = byId("preview-hint");
     el.localCount = byId("local-count");
     el.masterCount = byId("master-count");
     el.masterModified = byId("master-modified");
+    el.useProfileBtn = byId("use-profile-btn");
+    el.updateBtn = byId("update-btn");
     el.pushBtn = byId("push-btn");
     el.pullBtn = byId("pull-btn");
     el.replaceLocalBtn = byId("replace-local-btn");
@@ -113,6 +124,8 @@
     el.profileSelect.addEventListener("change", onProfileChange);
     el.renameBtn.addEventListener("click", () => guarded(onRename));
     el.deleteBtn.addEventListener("click", () => guarded(onDelete));
+    el.useProfileBtn.addEventListener("click", () => guarded(doUseProfile));
+    el.updateBtn.addEventListener("click", () => guarded(doUpdate));
     el.pushBtn.addEventListener("click", () => guarded(doPush));
     el.pullBtn.addEventListener("click", () => guarded(doPull));
     el.replaceLocalBtn.addEventListener("click", () => guarded(doReplaceLocal));
@@ -154,11 +167,10 @@
 
   function setBusy(busy) {
     state.busy = busy;
+    // Controls that are simply on when idle and off while busy.
     const controls = [
       el.refreshBtn,
       el.profileSelect,
-      el.renameBtn,
-      el.deleteBtn,
       el.pushBtn,
       el.pullBtn,
       el.replaceLocalBtn,
@@ -169,6 +181,46 @@
       el.bmReplaceMasterBtn,
     ];
     controls.forEach((c) => (c.disabled = busy));
+    // The "smart" buttons (Use / Update / Rename / Delete) also depend on the
+    // preview-vs-in-use relationship, so their state is computed centrally.
+    updateActionAvailability();
+  }
+
+  // Recompute the enabled state, labels, and preview hint for the buttons whose
+  // availability depends on the previewed and in-use profiles. Safe to call any
+  // time; it always folds in state.busy so it can't re-enable mid-operation.
+  function updateActionAvailability() {
+    const hasSelection = !!state.previewFile;
+    const previewIsInUse =
+      hasSelection && state.previewFile === state.inUseFile;
+
+    // Rename/delete act on the PREVIEWED profile.
+    el.renameBtn.disabled = state.busy || !hasSelection;
+    el.deleteBtn.disabled = state.busy || !hasSelection;
+
+    // "Use this profile" makes the previewed profile the one in use — pointless
+    // (and disabled) when it already is, or when nothing is selected.
+    el.useProfileBtn.disabled =
+      state.busy || !hasSelection || previewIsInUse;
+
+    // "Update" acts on the IN-USE profile regardless of what's previewed.
+    el.updateBtn.disabled = state.busy || !state.inUseFile;
+    const inUse = inUseProfileMeta();
+    // Make the target unambiguous when previewing a different profile.
+    el.updateBtn.textContent =
+      inUse && !previewIsInUse ? "Update '" + inUse.displayName + "'" : "Update";
+
+    // Subtle inline hint whenever the preview differs from what's in use.
+    if (hasSelection && state.inUseFile && !previewIsInUse) {
+      el.previewHint.textContent =
+        "Previewing — tabs unchanged. In use: " +
+        (inUse ? inUse.displayName : state.inUseFile) +
+        ".";
+      el.previewHint.classList.remove("hidden");
+    } else {
+      el.previewHint.textContent = "";
+      el.previewHint.classList.add("hidden");
+    }
   }
 
   /* ----------------------------------------------------------------- *
@@ -197,11 +249,13 @@
       return;
     }
 
-    // Restore the previously active profile if it still exists.
+    // Restore the previously in-use profile if it still exists.
     const stored = await getActiveProfile();
     const found = profiles.find((p) => p.fileName === stored);
-    state.activeFile = found ? found.fileName : profiles[0].fileName;
-    await setActiveProfile(state.activeFile);
+    state.inUseFile = found ? found.fileName : profiles[0].fileName;
+    await setActiveProfile(state.inUseFile);
+    // The dropdown always opens on the in-use profile — preview is ephemeral.
+    state.previewFile = state.inUseFile;
 
     populateSelect();
     await refreshStatus();
@@ -213,7 +267,8 @@
       const opt = document.createElement("option");
       opt.value = p.fileName;
       opt.textContent = p.displayName;
-      if (p.fileName === state.activeFile) opt.selected = true;
+      // The dropdown reflects the PREVIEWED profile, not the in-use one.
+      if (p.fileName === state.previewFile) opt.selected = true;
       el.profileSelect.appendChild(opt);
     }
     const newOpt = document.createElement("option");
@@ -221,41 +276,32 @@
     newOpt.textContent = "New profile…";
     el.profileSelect.appendChild(newOpt);
 
-    const hasActive = !!state.activeFile;
-    el.renameBtn.disabled = !hasActive;
-    el.deleteBtn.disabled = !hasActive;
+    updateActionAvailability();
   }
 
   async function onProfileChange() {
     const value = el.profileSelect.value;
     if (value === "__new__") {
-      // Reset the select back to the active profile; the picker isn't the
+      // Reset the select back to the previewed profile; the picker isn't the
       // commit — the modal is.
-      el.profileSelect.value = state.activeFile || "";
+      el.profileSelect.value = state.previewFile || "";
       await guarded(onNewProfile);
       return;
     }
 
-    // Feature B: optionally sync the OUTGOING profile before we switch away.
-    // Runs only when there is a real previous profile that differs from the
-    // target. A failure must NOT block the switch, so we capture the outcome
-    // and surface it AFTER refreshStatus (which would otherwise clear it).
-    const outgoing = state.activeFile;
-    let switchNote = null;
-    if (outgoing && outgoing !== value) {
-      switchNote = await maybeSyncOnSwitch(outgoing);
-    }
-
-    state.activeFile = value;
-    await setActiveProfile(value);
+    // PREVIEW ONLY. Picking a profile just previews it: refresh the status row
+    // for that profile and update the hint/buttons. It makes NO write, changes
+    // NO tabs, and syncs NOTHING — the in-use profile is untouched until the
+    // user presses "Use this profile".
+    state.previewFile = value;
+    updateActionAvailability();
     await guarded(refreshStatus);
-
-    if (switchNote) showFeedback(switchNote.text, switchNote.kind);
   }
 
-  // Feature B core: if "sync on switch" is enabled, sync this window into the
-  // outgoing profile using the chosen mode. Never throws and never blocks —
-  // returns { text, kind } describing what happened, or null when disabled.
+  // Sync-on-switch core: if "sync on switch" is enabled, sync this window into
+  // the OUTGOING (in-use) profile using the chosen mode. Invoked from "Use this
+  // profile" (never from the dropdown). Never throws and never blocks — returns
+  // { text, kind } describing what happened, or null when disabled.
   async function maybeSyncOnSwitch(outgoingFile) {
     let settings;
     try {
@@ -351,7 +397,9 @@
 
     state.profiles.push({ fileName, displayName: displayName.trim() });
     state.profiles.sort((a, b) => a.displayName.localeCompare(b.displayName));
-    state.activeFile = fileName;
+    // A freshly created profile becomes both the in-use and the previewed one.
+    state.inUseFile = fileName;
+    state.previewFile = fileName;
     await setActiveProfile(fileName);
     populateSelect();
     await refreshStatus();
@@ -359,11 +407,11 @@
   }
 
   async function onRename() {
-    const active = activeProfileMeta();
-    if (!active) return;
+    const target = previewProfileMeta();
+    if (!target) return;
     const name = await modalPrompt({
       message: "Rename profile:",
-      value: active.displayName,
+      value: target.displayName,
       confirmLabel: "Rename",
       validate: (n) => {
         const trimmed = (n || "").trim();
@@ -371,7 +419,7 @@
         const fileName = profileFileName(trimmed);
         // Allow keeping the same file; only collide with OTHER profiles.
         if (
-          fileName !== active.fileName &&
+          fileName !== target.fileName &&
           state.profiles.some((p) => p.fileName === fileName)
         ) {
           return "A profile with a similar name already exists.";
@@ -383,17 +431,18 @@
 
     showFeedback("Renaming…");
     // Re-fetch fresh so we rename the current content, not a stale cache.
-    const profile = await state.provider.readProfile(active.fileName);
+    const profile = await state.provider.readProfile(target.fileName);
     profile.displayName = name.trim();
     profile.lastModified = new Date().toISOString();
     const newFileName = profileFileName(name.trim());
 
     // Provider handles the rename (single gist PATCH, or write-then-delete on
     // Forgejo).
-    await state.provider.renameProfile(active.fileName, newFileName, profile);
+    await state.provider.renameProfile(target.fileName, newFileName, profile);
 
     // Update local state.
-    const idx = state.profiles.findIndex((p) => p.fileName === active.fileName);
+    const wasInUse = state.inUseFile === target.fileName;
+    const idx = state.profiles.findIndex((p) => p.fileName === target.fileName);
     if (idx >= 0) {
       state.profiles[idx] = {
         fileName: newFileName,
@@ -401,16 +450,20 @@
       };
     }
     state.profiles.sort((a, b) => a.displayName.localeCompare(b.displayName));
-    state.activeFile = newFileName;
-    await setActiveProfile(newFileName);
+    state.previewFile = newFileName;
+    // If the renamed profile was the one in use, its stored filename moves too.
+    if (wasInUse) {
+      state.inUseFile = newFileName;
+      await setActiveProfile(newFileName);
+    }
     populateSelect();
     await refreshStatus();
     showFeedback('Renamed to "' + name.trim() + '".', "ok");
   }
 
   async function onDelete() {
-    const active = activeProfileMeta();
-    if (!active) return;
+    const target = previewProfileMeta();
+    if (!target) return;
     if (state.profiles.length <= 1) {
       showFeedback("Can't delete the only profile.", "error");
       return;
@@ -420,28 +473,40 @@
     const confirmed = await modalTypedConfirm({
       message:
         'Delete profile "' +
-        active.displayName +
+        target.displayName +
         '"? This removes it from the Gist and cannot be undone.\n\nType the profile name to confirm:',
-      expected: active.displayName,
+      expected: target.displayName,
       confirmLabel: "Delete",
     });
     if (!confirmed) return;
 
     showFeedback("Deleting…");
-    await state.provider.deleteProfile(active.fileName);
+    await state.provider.deleteProfile(target.fileName);
 
+    const wasInUse = state.inUseFile === target.fileName;
     state.profiles = state.profiles.filter(
-      (p) => p.fileName !== active.fileName
+      (p) => p.fileName !== target.fileName
     );
-    state.activeFile = state.profiles[0].fileName;
-    await setActiveProfile(state.activeFile);
+    // Preview falls back to the first remaining profile.
+    state.previewFile = state.profiles[0].fileName;
+    // If the deleted profile was in use, move the in-use pointer too.
+    if (wasInUse) {
+      state.inUseFile = state.profiles[0].fileName;
+      await setActiveProfile(state.inUseFile);
+    }
     populateSelect();
     await refreshStatus();
-    showFeedback('Deleted "' + active.displayName + '".', "ok");
+    showFeedback('Deleted "' + target.displayName + '".', "ok");
   }
 
-  function activeProfileMeta() {
-    return state.profiles.find((p) => p.fileName === state.activeFile) || null;
+  // Metadata of the PREVIEWED (dropdown) profile.
+  function previewProfileMeta() {
+    return state.profiles.find((p) => p.fileName === state.previewFile) || null;
+  }
+
+  // Metadata of the IN-USE profile.
+  function inUseProfileMeta() {
+    return state.profiles.find((p) => p.fileName === state.inUseFile) || null;
   }
 
   /* ----------------------------------------------------------------- *
@@ -449,7 +514,8 @@
    * ----------------------------------------------------------------- */
 
   async function refreshStatus() {
-    if (!state.activeFile) {
+    // The status row reflects the PREVIEWED profile's master vs. the live window.
+    if (!state.previewFile) {
       el.localCount.textContent = "—";
       el.masterCount.textContent = "—";
       el.masterModified.textContent = "—";
@@ -459,7 +525,7 @@
 
     // Show the cached snapshot immediately (display only) for snappiness while
     // the fresh fetch is in flight. The cache is never used for operations.
-    const cached = await getMasterCache(state.activeFile);
+    const cached = await getMasterCache(state.previewFile);
     if (cached) {
       el.masterCount.textContent = String(cached.tabsCount);
       el.masterModified.textContent = formatTimestamp(cached.lastModified);
@@ -470,11 +536,11 @@
     el.localCount.textContent = String(local.tabs.length);
 
     // Master is always fetched fresh; we cache it only for display.
-    const master = await state.provider.readProfile(state.activeFile);
+    const master = await state.provider.readProfile(state.previewFile);
     state.master = master;
     el.masterCount.textContent = String((master.tabs || []).length);
     el.masterModified.textContent = formatTimestamp(master.lastModified);
-    await setMasterCache(state.activeFile, {
+    await setMasterCache(state.previewFile, {
       tabsCount: (master.tabs || []).length,
       lastModified: master.lastModified,
     });
@@ -522,10 +588,10 @@
   }
 
   async function doPush() {
-    requireActive();
+    requireSelected();
     showFeedback("Pushing to master…");
     const { master, added, skipped } = await pushLocalToProfile(
-      state.activeFile
+      state.previewFile
     );
     state.master = master;
     el.masterCount.textContent = String(master.tabs.length);
@@ -548,10 +614,10 @@
    * ----------------------------------------------------------------- */
 
   async function doPull() {
-    requireActive();
+    requireSelected();
     showFeedback("Pulling from master…");
     const local = await getCurrentTabs();
-    const master = await state.provider.readProfile(state.activeFile);
+    const master = await state.provider.readProfile(state.previewFile);
 
     const openUrls = new Set(local.tabs.map((t) => normalizeUrl(t.url)));
     const toOpen = (master.tabs || []).filter(
@@ -604,8 +670,8 @@
    * ----------------------------------------------------------------- */
 
   async function doReplaceLocal() {
-    requireActive();
-    const master = await state.provider.readProfile(state.activeFile);
+    requireSelected();
+    const master = await state.provider.readProfile(state.previewFile);
 
     const confirmed = await modalConfirm({
       message:
@@ -618,16 +684,48 @@
     if (!confirmed) return;
 
     showFeedback("Replacing local…");
+    const res = await replaceWindowWithMaster(master);
+    if (res.aborted) {
+      showFeedback(
+        "Nothing could be opened — the window was left untouched.",
+        "error"
+      );
+      return;
+    }
 
+    await refreshStatus();
+    let msg =
+      "Local replaced with " +
+      res.opened +
+      plural(res.opened, " tab", " tabs") +
+      " from master.";
+    if (res.failed) {
+      msg +=
+        " " +
+        res.failed +
+        plural(res.failed, " tab", " tabs") +
+        " couldn't be opened.";
+    }
+    showFeedback(msg, res.failed ? "error" : "ok");
+  }
+
+  // Shared create-before-remove core for making the current window match a
+  // master exactly. Used by both "Replace local" (Advanced) and "Use this
+  // profile". The caller is responsible for confirming and for fetching `master`
+  // fresh; this function owns only the tab surgery and does NOT touch feedback,
+  // refreshStatus, or any profile pointer. Returns
+  // { opened, failed, aborted } — `aborted` is true only when EVERY create
+  // failed, in which case the window is left exactly as it was.
+  async function replaceWindowWithMaster(master) {
     // create-before-remove ordering: DON'T empty the window first. Emptying it
     // makes Chrome activate whatever remains — and if that's the New Tab Page,
     // the NTP grabs browser-UI focus for its search box, which closes the action
-    // popup. Since all our logic runs in the popup's JS context (there is no
-    // background worker), losing the popup mid-operation aborts everything and
-    // strands the window blank. So we create the new tabs (and group them) while
-    // the originals still exist — the window never empties — and remove the
-    // originals as the very LAST tab op. This also fails safe: if creation goes
-    // wrong we can bail without having closed anything.
+    // popup. Since all our logic runs in the popup's JS context, losing the
+    // popup mid-operation aborts everything and strands the window blank. So we
+    // create the new tabs (and group them) while the originals still exist — the
+    // window never empties — and remove the originals as the very LAST tab op.
+    // This also fails safe: if creation goes wrong we can bail without having
+    // closed anything.
 
     // Record the ids of the tabs to replace BEFORE creating anything, so the
     // create step can't sweep the new tabs into this set.
@@ -673,20 +771,15 @@
 
       if (created.length === 0) {
         // Every create failed: don't close anything — leave the window exactly
-        // as it was and tell the user nothing could be opened.
-        showFeedback(
-          "Nothing could be opened — the window was left untouched.",
-          "error"
-        );
-        return;
+        // as it was and let the caller tell the user nothing could be opened.
+        return { opened: 0, failed, aborted: true };
       }
 
-      // reuseExisting is omitted (false): Replace local must keep creating
-      // fresh groups. Any same-titled group currently in the window belongs
-      // to the outgoing tabs and is destroyed once oldIds are removed below —
-      // reusing it would fold master's new tabs into a group that's about to
-      // vanish (or, worse, drag them into its old position), breaking the
-      // exact-layout guarantee this operation promises.
+      // reuseExisting is omitted (false): this must keep creating fresh groups.
+      // Any same-titled group currently in the window belongs to the outgoing
+      // tabs and is destroyed once oldIds are removed below — reusing it would
+      // fold the new tabs into a group that's about to vanish (or, worse, drag
+      // them into its old position), breaking the exact-layout guarantee.
       await applyGroups(created, master.groups || {});
 
       // The new tabs now populate the window; removing the originals is the LAST
@@ -696,35 +789,20 @@
       // in the correct final state.
       await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
 
-      await refreshStatus();
-      let msg =
-        "Local replaced with " +
-        created.length +
-        plural(created.length, " tab", " tabs") +
-        " from master.";
-      if (failed) {
-        msg +=
-          " " +
-          failed +
-          plural(failed, " tab", " tabs") +
-          " couldn't be opened.";
-      }
-      showFeedback(msg, failed ? "error" : "ok");
-      return;
+      return { opened: created.length, failed, aborted: false };
     }
 
     // Master is empty: minimal survivor path. Create one blank tab so the window
     // doesn't close when the originals go, then remove the originals. That
     // removal is the final action — if the NTP steals focus and closes the popup
-    // afterward, the operation is already complete; only the feedback line below
-    // is lost (acceptable).
+    // afterward, the operation is already complete; only the caller's feedback
+    // line is lost (acceptable).
     await chromeCall((cb) =>
       chrome.tabs.create({ url: "chrome://newtab", active: false }, cb)
     );
     await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
 
-    await refreshStatus();
-    showFeedback("Local replaced with 0 tabs from master.", "ok");
+    return { opened: 0, failed: 0, aborted: false };
   }
 
   /* ----------------------------------------------------------------- *
@@ -732,14 +810,14 @@
    * ----------------------------------------------------------------- */
 
   async function doReplaceMaster() {
-    requireActive();
+    requireSelected();
     const local = await getCurrentTabs();
-    const active = activeProfileMeta();
+    const target = previewProfileMeta();
 
     const confirmed = await modalConfirm({
       message:
         'Replace master with local?\n\nThis OVERWRITES profile "' +
-        active.displayName +
+        target.displayName +
         '" with the current window (' +
         local.tabs.length +
         " tab(s)). The previous master content is discarded.",
@@ -749,12 +827,144 @@
     if (!confirmed) return;
 
     showFeedback("Replacing master…");
-    const profile = await replaceMasterFile(state.activeFile);
+    const profile = await replaceMasterFile(state.previewFile);
     state.master = profile;
     el.masterCount.textContent = String(profile.tabs.length);
     el.masterModified.textContent = formatTimestamp(profile.lastModified);
     showFeedback(
       "Master replaced with " +
+        profile.tabs.length +
+        plural(profile.tabs.length, " tab", " tabs") +
+        " from this window.",
+      "ok"
+    );
+  }
+
+  /* ----------------------------------------------------------------- *
+   * Primary action: Use this profile
+   *
+   * Makes the PREVIEWED profile the one in use and replaces this window's tabs
+   * with that profile's master (the Replace-local machinery). Before touching
+   * any tab, optionally syncs the OUTGOING in-use profile so profiles can be
+   * round-tripped without losing tabs. Disabled when the previewed profile is
+   * already in use (so there is never an outgoing == incoming case here).
+   * ----------------------------------------------------------------- */
+
+  async function doUseProfile() {
+    requireSelected();
+    // The button is disabled in this case; guard defensively anyway.
+    if (state.previewFile === state.inUseFile) return;
+
+    const target = previewProfileMeta();
+    const targetName = target ? target.displayName : state.previewFile;
+
+    // Fresh master fetch (like Replace local): drives the confirmation count and
+    // the tab surgery.
+    const master = await state.provider.readProfile(state.previewFile);
+
+    const confirmed = await modalConfirm({
+      message:
+        'Use "' +
+        targetName +
+        '"?\n\nThis CLOSES every tab in this window and reopens the ' +
+        (master.tabs || []).length +
+        " tab(s) from that profile. Unsaved local tabs will be lost.",
+      confirmLabel: "Use this profile",
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    // BEFORE replacing tabs: optionally sync the OUTGOING (in-use) profile, so
+    // the window we're about to close is first saved into the profile we're
+    // leaving. This must happen before any tab is touched. A failure warns but
+    // does NOT block the switch (surfaced with the final message below).
+    let switchNote = null;
+    if (state.inUseFile && state.inUseFile !== state.previewFile) {
+      switchNote = await maybeSyncOnSwitch(state.inUseFile);
+    }
+
+    showFeedback("Switching profile…");
+    const res = await replaceWindowWithMaster(master);
+    if (res.aborted) {
+      // Nothing could be opened: do NOT switch the in-use pointer — the window
+      // is untouched and we're still using the previous profile.
+      const inUse = inUseProfileMeta();
+      let msg =
+        "Nothing could be opened — still using '" +
+        (inUse ? inUse.displayName : state.inUseFile) +
+        "'.";
+      if (switchNote && switchNote.kind === "error") {
+        msg = switchNote.text + " " + msg;
+      }
+      showFeedback(msg, "error");
+      return;
+    }
+
+    // Commit the switch: the previewed profile is now the one in use.
+    state.inUseFile = state.previewFile;
+    await setActiveProfile(state.inUseFile);
+    await refreshStatus();
+    updateActionAvailability();
+
+    let msg =
+      "Now using '" +
+      targetName +
+      "' — opened " +
+      res.opened +
+      plural(res.opened, " tab", " tabs") +
+      ".";
+    if (res.failed) {
+      msg +=
+        " " +
+        res.failed +
+        plural(res.failed, " tab", " tabs") +
+        " couldn't be opened.";
+    }
+    const hadSyncError = switchNote && switchNote.kind === "error";
+    if (hadSyncError) msg = switchNote.text + " " + msg;
+    showFeedback(msg, res.failed || hadSyncError ? "error" : "ok");
+  }
+
+  /* ----------------------------------------------------------------- *
+   * Primary action: Update
+   *
+   * Overwrites the IN-USE profile's master with the current window (Replace
+   * master), regardless of what's previewed.
+   * ----------------------------------------------------------------- */
+
+  async function doUpdate() {
+    if (!state.inUseFile) {
+      throw new TabulaError("No profile in use yet.", "generic");
+    }
+    const inUse = inUseProfileMeta();
+    const inUseName = inUse ? inUse.displayName : state.inUseFile;
+    const local = await getCurrentTabs();
+
+    const confirmed = await modalConfirm({
+      message:
+        'Replace master with local?\n\nThis OVERWRITES profile "' +
+        inUseName +
+        '" with the current window (' +
+        local.tabs.length +
+        " tab(s)). The previous master content is discarded.",
+      confirmLabel: "Update",
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    showFeedback("Updating master…");
+    const profile = await replaceMasterFile(state.inUseFile);
+    // Only refresh the status display if the in-use profile is also the one
+    // being previewed (otherwise the status row shows a different profile).
+    if (state.previewFile === state.inUseFile) {
+      state.master = profile;
+      el.masterCount.textContent = String(profile.tabs.length);
+      el.masterModified.textContent = formatTimestamp(profile.lastModified);
+    }
+    showFeedback(
+      "Updated '" +
+        inUseName +
+        "' with " +
         profile.tabs.length +
         plural(profile.tabs.length, " tab", " tabs") +
         " from this window.",
@@ -1151,8 +1361,8 @@
    * Small helpers
    * ----------------------------------------------------------------- */
 
-  function requireActive() {
-    if (!state.activeFile) {
+  function requireSelected() {
+    if (!state.previewFile) {
       throw new TabulaError("Select or create a profile first.", "generic");
     }
   }

@@ -163,10 +163,10 @@
           changed, by the background worker.
         </p>
 
-        <!-- Sync on profile switch -->
+        <!-- Sync the outgoing profile on "Use this profile" -->
         <label class="switch-label spaced-top">
           <input type="checkbox" id="switch-sync-enabled" />
-          <span>Sync when switching profiles</span>
+          <span>Sync the outgoing profile when you press Use this profile</span>
         </label>
         <div class="auto-controls">
           <label class="inline-field" for="switch-sync-mode">
@@ -178,9 +178,11 @@
           </label>
         </div>
         <p class="hint">
-          Before switching, sync this window into the profile you're leaving.
-          <strong>Replace</strong> overwrites that outgoing profile's master
-          with the current window.
+          When you press <strong>Use this profile</strong>, this window is first
+          synced into the profile you're leaving (before its tabs are replaced).
+          Merely previewing a profile in the dropdown never syncs.
+          <strong>Replace</strong> overwrites that outgoing profile's master with
+          the current window.
         </p>
 
         <p id="auto-sync-status" class="status-line auto-status hidden"></p>
