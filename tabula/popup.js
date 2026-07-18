@@ -430,15 +430,21 @@
     if (name == null) return;
 
     showFeedback("Renaming…");
-    // Re-fetch fresh so we rename the current content, not a stale cache.
-    const profile = await state.provider.readProfile(target.fileName);
-    profile.displayName = name.trim();
-    profile.lastModified = new Date().toISOString();
     const newFileName = profileFileName(name.trim());
 
-    // Provider handles the rename (single gist PATCH, or write-then-delete on
-    // Forgejo).
-    await state.provider.renameProfile(target.fileName, newFileName, profile);
+    // Serialize the read-modify-write (read current content → rename) against
+    // auto-sync, which could otherwise push tabs into the old file between our
+    // read and the rename's delete-old step, losing them. The modal above is
+    // OUTSIDE the lock.
+    await withSyncLock(async () => {
+      // Re-fetch fresh so we rename the current content, not a stale cache.
+      const profile = await state.provider.readProfile(target.fileName);
+      profile.displayName = name.trim();
+      profile.lastModified = new Date().toISOString();
+      // Provider handles the rename (single gist PATCH, or write-then-delete on
+      // Forgejo).
+      await state.provider.renameProfile(target.fileName, newFileName, profile);
+    });
 
     // Update local state.
     const wasInUse = state.inUseFile === target.fileName;
@@ -481,7 +487,9 @@
     if (!confirmed) return;
 
     showFeedback("Deleting…");
-    await state.provider.deleteProfile(target.fileName);
+    // Serialize the delete against auto-sync so a tick can't recreate/write the
+    // file around the delete. The typed-name modal above is OUTSIDE the lock.
+    await withSyncLock(() => state.provider.deleteProfile(target.fileName));
 
     const wasInUse = state.inUseFile === target.fileName;
     state.profiles = state.profiles.filter(
@@ -557,34 +565,40 @@
   // { master, added, skipped }.
   async function pushLocalToProfile(fileName) {
     const local = await getCurrentTabs();
-    // Always re-fetch master immediately before writing.
-    const master = await state.provider.readProfile(fileName);
+    // Serialize the backend read-modify-write against background auto-sync and
+    // any other popup write. The local tab read above stays outside the lock to
+    // keep its scope tight; nothing here awaits user input, so the lock is only
+    // ever held across the backend read→write.
+    return withSyncLock(async () => {
+      // Always re-fetch master immediately before writing.
+      const master = await state.provider.readProfile(fileName);
 
-    // Tolerate a hand-edited profile missing its tabs array.
-    master.tabs = master.tabs || [];
-    const existing = new Set(master.tabs.map((t) => normalizeUrl(t.url)));
-    let added = 0;
-    let skipped = 0;
-    for (const tab of local.tabs) {
-      const key = normalizeUrl(tab.url);
-      if (existing.has(key)) {
-        skipped++;
-        continue;
+      // Tolerate a hand-edited profile missing its tabs array.
+      master.tabs = master.tabs || [];
+      const existing = new Set(master.tabs.map((t) => normalizeUrl(t.url)));
+      let added = 0;
+      let skipped = 0;
+      for (const tab of local.tabs) {
+        const key = normalizeUrl(tab.url);
+        if (existing.has(key)) {
+          skipped++;
+          continue;
+        }
+        master.tabs.push(tab);
+        existing.add(key);
+        added++;
       }
-      master.tabs.push(tab);
-      existing.add(key);
-      added++;
-    }
 
-    // Merge group metadata: groups present locally but not in master are added.
-    master.groups = master.groups || {};
-    for (const title of Object.keys(local.groups)) {
-      if (!master.groups[title]) master.groups[title] = local.groups[title];
-    }
+      // Merge group metadata: groups present locally but not in master are added.
+      master.groups = master.groups || {};
+      for (const title of Object.keys(local.groups)) {
+        if (!master.groups[title]) master.groups[title] = local.groups[title];
+      }
 
-    master.lastModified = new Date().toISOString();
-    await state.provider.writeProfile(fileName, master);
-    return { master, added, skipped };
+      master.lastModified = new Date().toISOString();
+      await state.provider.writeProfile(fileName, master);
+      return { master, added, skipped };
+    });
   }
 
   async function doPush() {
@@ -988,7 +1002,8 @@
       tabs: local.tabs,
       groups: local.groups,
     };
-    await state.provider.writeProfile(fileName, profile);
+    // Serialize the backend write against auto-sync / other popup writes.
+    await withSyncLock(() => state.provider.writeProfile(fileName, profile));
     return profile;
   }
 
@@ -1004,11 +1019,16 @@
   async function doBookmarksPush() {
     showFeedback("Pushing bookmarks to master…");
     const local = await readBookmarksBar();
-    const master = await readBookmarksMaster(state.provider);
-    const { bar, added, skipped } = mergeBookmarks(master.bar || [], local.bar);
-    await writeBookmarksMaster(state.provider, {
-      lastModified: new Date().toISOString(),
-      bar,
+    // Serialize the shared-bookmarks read-modify-write against auto-sync's own
+    // bookmark sync (and any other popup write). Local bar read stays outside.
+    const { added, skipped } = await withSyncLock(async () => {
+      const master = await readBookmarksMaster(state.provider);
+      const { bar, added, skipped } = mergeBookmarks(master.bar || [], local.bar);
+      await writeBookmarksMaster(state.provider, {
+        lastModified: new Date().toISOString(),
+        bar,
+      });
+      return { added, skipped };
     });
     showFeedback(
       "Added " +
@@ -1080,10 +1100,14 @@
     if (!confirmed) return;
 
     showFeedback("Replacing master bookmarks…");
-    await writeBookmarksMaster(state.provider, {
-      lastModified: new Date().toISOString(),
-      bar: local.bar,
-    });
+    // Serialize the write against auto-sync's bookmark sync. Modal above is
+    // outside the lock.
+    await withSyncLock(() =>
+      writeBookmarksMaster(state.provider, {
+        lastModified: new Date().toISOString(),
+        bar: local.bar,
+      })
+    );
     showFeedback(
       "Master bookmark set replaced with " +
         count +

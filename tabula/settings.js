@@ -12,6 +12,11 @@
 
   const el = {};
 
+  // Guards Migrate against re-entrancy. The button disables itself only after an
+  // awaited storage read, leaving a small window where a double-click could
+  // start a second migration; this flag closes it.
+  let migrating = false;
+
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
@@ -84,10 +89,10 @@
         "switchSyncMode",
       ]);
       el.autoEnabled.checked = !!s.autoSyncEnabled;
-      const minutes = Number(s.autoSyncMinutes);
-      el.autoMinutes.value = String(
-        Number.isFinite(minutes) && minutes >= 1 ? minutes : 15
-      );
+      // Same clamp as the background worker and the save path (Number → round →
+      // [1,1440], NaN → default) so the displayed value can never disagree with
+      // what actually gets scheduled.
+      el.autoMinutes.value = String(clampAutoSyncMinutes(s.autoSyncMinutes));
       el.autoMode.value = s.autoSyncMode === "replace" ? "replace" : "push";
       el.autoBookmarks.checked = !!s.autoSyncBookmarks;
       el.switchEnabled.checked = !!s.switchSyncEnabled;
@@ -112,9 +117,9 @@
   }
 
   async function saveAutoSync() {
-    // Clamp minutes to the chrome.alarms minimum of 1 and reflect the clamp.
-    let minutes = parseInt(el.autoMinutes.value, 10);
-    if (!Number.isFinite(minutes) || minutes < 1) minutes = 1;
+    // Clamp minutes with the shared helper (Number → round → [1,1440], NaN →
+    // default) and reflect the clamp back into the field.
+    const minutes = clampAutoSyncMinutes(el.autoMinutes.value);
     el.autoMinutes.value = String(minutes);
 
     try {
@@ -279,6 +284,12 @@
   }
 
   async function onMigrate() {
+    if (migrating) return; // ignore a double-click while a migration runs
+    migrating = true;
+    // The whole body is wrapped in an outer try/finally (closed at the end of
+    // this function) solely so `migrating` resets on EVERY exit path, including
+    // the early returns below. Inner indentation is left unchanged.
+    try {
     // Snapshot the "switch active backend" preference BEFORE the run starts.
     const switchActive = el.migrateSwitchActive.checked;
 
@@ -491,6 +502,10 @@
       // Restore the button's correct enabled state without clobbering the final
       // status line (refreshMigrateState only writes status on a storage error).
       await refreshMigrateState();
+    }
+    } finally {
+      // Outer finally (see the top of onMigrate): release the re-entrancy guard.
+      migrating = false;
     }
   }
 

@@ -37,6 +37,26 @@ const SKIP_URL_PREFIXES = [
   "about:",
 ];
 
+// Auto-sync interval bounds, shared by the background worker
+// (getAutoSyncSettings) and the settings page (save + display) so both clamp
+// identically. chrome.alarms enforces a 1-minute floor; the 24h ceiling guards
+// against a user typing an absurd value.
+const AUTO_SYNC_MIN_MINUTES = 1;
+const AUTO_SYNC_MAX_MINUTES = 1440; // 24h
+const AUTO_SYNC_DEFAULT_MINUTES = 15;
+
+// Coerce a stored/typed minutes value into the valid range. Number() first (so
+// "15" and 15 behave the same), then round, then clamp to [MIN, MAX]. A
+// non-numeric value (NaN) falls back to the default rather than the floor.
+function clampAutoSyncMinutes(value) {
+  let m = Number(value);
+  if (!Number.isFinite(m)) return AUTO_SYNC_DEFAULT_MINUTES;
+  m = Math.round(m);
+  if (m < AUTO_SYNC_MIN_MINUTES) m = AUTO_SYNC_MIN_MINUTES;
+  if (m > AUTO_SYNC_MAX_MINUTES) m = AUTO_SYNC_MAX_MINUTES;
+  return m;
+}
+
 /* ------------------------------------------------------------------ *
  * Structured error
  * ------------------------------------------------------------------ */
@@ -149,6 +169,39 @@ async function getBackendConfig() {
     githubToken: items.githubToken || null,
     gistId: items.gistId || null,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Cross-context sync mutex
+ *
+ * The popup (an extension page) and the background service worker share the
+ * extension origin, so a Web Locks named lock is a TRUE mutex across both:
+ * whichever context holds "tabula-sync" blocks the other until it releases.
+ * We use it to serialize the backend read-modify-write critical sections
+ * (read a profile / bookmarks file → merge → write it back) so a background
+ * auto-sync tick and a manual popup operation can never interleave and lose
+ * each other's writes.
+ *
+ * Scope must stay TIGHT: wrap only the backend read→write, never a modal or any
+ * await on user input — holding the lock across a confirmation dialog would
+ * stall auto-sync (and, worse, a second popup) for as long as the dialog is up.
+ * Callers must also never request the lock while already holding it (no nesting)
+ * or they self-deadlock; see the call sites, which acquire it at exactly one
+ * level.
+ * ------------------------------------------------------------------ */
+
+function withSyncLock(fn) {
+  // Feature-guard: if Web Locks is unavailable (very old Chrome or a test
+  // harness), fall back to running fn directly — no cross-context protection,
+  // but never a crash.
+  if (
+    typeof navigator !== "undefined" &&
+    navigator.locks &&
+    typeof navigator.locks.request === "function"
+  ) {
+    return navigator.locks.request("tabula-sync", () => fn());
+  }
+  return Promise.resolve().then(fn);
 }
 
 /* ------------------------------------------------------------------ *
@@ -676,11 +729,28 @@ class ForgejoProvider {
   }
 
   async listProfiles() {
-    const entries = await forgejoFetch(
-      this.base,
-      this.token,
-      this._repoPath() + "/contents/"
-    );
+    let entries;
+    try {
+      entries = await forgejoFetch(
+        this.base,
+        this.token,
+        this._repoPath() + "/contents/"
+      );
+    } catch (e) {
+      // A 404 on the contents listing is ambiguous. It happens both for a
+      // freshly auto_init'd repo whose tree the API hasn't surfaced yet (an
+      // EMPTY profile set — must NOT trip the popup's "repo not found,
+      // recreate?" recovery) and for a repo that was genuinely deleted. Probe
+      // the repo itself to disambiguate: if the repo exists, treat the listing
+      // as empty; if the repo is gone too, let not_found bubble so the popup can
+      // offer to recreate it.
+      if (e && e.code === "not_found") {
+        // Throws not_found again if the repo is truly gone.
+        await forgejoFetch(this.base, this.token, this._repoPath());
+        return [];
+      }
+      throw e;
+    }
     const profiles = [];
     if (Array.isArray(entries)) {
       for (const entry of entries) {

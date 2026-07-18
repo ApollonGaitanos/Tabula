@@ -28,9 +28,15 @@ importScripts("common.js");
 // prior schedule, so there is never more than one.
 const AUTO_SYNC_ALARM = "tabula-autosync";
 
-// chrome.alarms enforces a 1-minute minimum period; we clamp to it everywhere.
-const AUTO_SYNC_MIN_MINUTES = 1;
-const AUTO_SYNC_DEFAULT_MINUTES = 15;
+// The interval bounds/clamp (AUTO_SYNC_MIN_MINUTES, AUTO_SYNC_DEFAULT_MINUTES,
+// clampAutoSyncMinutes) now live in common.js so this worker and the settings
+// page apply identical rules; they're in scope here via importScripts.
+
+// Guards the alarm handler against re-entrancy: chrome.alarms can fire the next
+// tick while a slow previous run is still in flight. The Web Locks mutex already
+// protects backend writes, but this flag also stops two ticks from doing the
+// redundant read/compute work at once.
+let autoSyncInFlight = false;
 
 /* ------------------------------------------------------------------ *
  * Settings
@@ -45,13 +51,11 @@ async function getAutoSyncSettings() {
     "autoSyncMode",
     "autoSyncBookmarks",
   ]);
-  let minutes = Number(items.autoSyncMinutes);
-  if (!Number.isFinite(minutes) || minutes < AUTO_SYNC_MIN_MINUTES) {
-    minutes = AUTO_SYNC_DEFAULT_MINUTES;
-  }
   return {
     autoSyncEnabled: !!items.autoSyncEnabled,
-    autoSyncMinutes: minutes,
+    // Number → round → clamp to [1, 1440], NaN → default. Shared with the
+    // settings page so the stored value and the schedule always agree.
+    autoSyncMinutes: clampAutoSyncMinutes(items.autoSyncMinutes),
     autoSyncMode: items.autoSyncMode === "replace" ? "replace" : "push",
     autoSyncBookmarks: !!items.autoSyncBookmarks,
   };
@@ -83,11 +87,19 @@ async function reconcileAutoSyncAlarm() {
   await clearAutoSyncAlarm();
   if (!settings.autoSyncEnabled) return;
   try {
-    chrome.alarms.create(AUTO_SYNC_ALARM, {
+    // Await the promise form so an async scheduling failure rejects here rather
+    // than vanishing.
+    await chrome.alarms.create(AUTO_SYNC_ALARM, {
       periodInMinutes: Math.max(AUTO_SYNC_MIN_MINUTES, settings.autoSyncMinutes),
     });
   } catch (e) {
-    /* ignore — nothing we can surface from the worker */
+    // A failed alarm creation would otherwise disable auto-sync forever with no
+    // trace. Surface it on the settings status line via lastAutoSync so the user
+    // can see that scheduling — not syncing — is what broke.
+    await recordAutoSync(
+      false,
+      "Couldn't schedule auto-sync: " + describeError(e)
+    );
   }
 }
 
@@ -132,12 +144,31 @@ function getLastFocusedNormalWindow() {
   });
 }
 
+// Resolve ALL normal browser windows (or [] on error). Used by replace-mode
+// auto-sync, which — being destructive — can't trust the arbitrary window that
+// getLastFocused may return when Chrome is unfocused with several open.
+function getAllNormalWindows() {
+  return new Promise((resolve) => {
+    try {
+      chrome.windows.getAll({ windowTypes: ["normal"] }, (wins) => {
+        if (chrome.runtime.lastError || !wins) resolve([]);
+        else resolve(wins);
+      });
+    } catch (e) {
+      resolve([]);
+    }
+  });
+}
+
 // Push semantics, mirrored from the popup's doPush: append non-duplicate tabs
 // (duplicate = exact URL after stripping one trailing slash), merge group
 // metadata for locally-present groups, bump lastModified, write. Returns a
 // human-readable summary.
 async function autoPush(provider, fileName, master, local) {
   master.tabs = master.tabs || [];
+  // The Set/array allocation here is per-tick and bounded by the profile size
+  // (a few hundred tabs at most), so it's negligible — deliberately left as-is
+  // for readability rather than pooled or hoisted.
   const existing = new Set(master.tabs.map((t) => normalizeUrl(t.url)));
   let added = 0;
   let skipped = 0;
@@ -201,6 +232,9 @@ async function autoSyncBookmarks(provider, mode) {
 // profile — and records ok/error only once an actual sync is attempted.
 // NEVER throws: all failures land in lastAutoSync.
 async function runAutoSync() {
+  // Non-reentrant: if a previous tick is still running, skip this one entirely.
+  if (autoSyncInFlight) return;
+  autoSyncInFlight = true;
   try {
     const settings = await getAutoSyncSettings();
     if (!settings.autoSyncEnabled) return; // toggled off since the alarm fired
@@ -223,8 +257,35 @@ async function runAutoSync() {
       if (!granted) return;
     }
 
-    const win = await getLastFocusedNormalWindow();
-    if (!win) return; // no normal window to read
+    // Pick the window to read. The choice is asymmetric by mode ON PURPOSE:
+    //   - REPLACE overwrites master from this window, so reading the WRONG one
+    //     destroys data. getLastFocused can return an arbitrary window when
+    //     Chrome is unfocused with several open, so we refuse to guess: use the
+    //     sole window if there's one, the focused one if several, and SKIP the
+    //     tick (recording why) if several exist with none focused.
+    //   - PUSH is a non-destructive merge (append-only): the worst case from an
+    //     arbitrary window is a few extra tabs added to master, never loss, so
+    //     the cheaper last-focused pick is fine.
+    let win;
+    if (settings.autoSyncMode === "replace") {
+      const wins = await getAllNormalWindows();
+      if (wins.length === 0) return; // no normal window to read
+      if (wins.length === 1) {
+        win = wins[0];
+      } else {
+        win = wins.find((w) => w.focused === true) || null;
+        if (!win) {
+          await recordAutoSync(
+            false,
+            "Skipped auto-replace: multiple windows and none focused"
+          );
+          return;
+        }
+      }
+    } else {
+      win = await getLastFocusedNormalWindow();
+      if (!win) return; // no normal window to read
+    }
 
     const activeFile = await getActiveProfile();
     if (!activeFile) return; // no profile selected
@@ -232,34 +293,49 @@ async function runAutoSync() {
     const provider = makeProvider(config);
     const local = await getTabsOfWindow(win.id);
 
-    // Read master fresh; if the profile file is gone, bail silently.
-    let master;
-    try {
-      master = await provider.readProfile(activeFile);
-    } catch (e) {
-      if (e && e.code === "not_found") return;
-      throw e;
-    }
-
-    let message =
-      settings.autoSyncMode === "replace"
-        ? await autoReplace(provider, activeFile, master, local)
-        : await autoPush(provider, activeFile, master, local);
-
-    // Optionally also sync the shared bookmarks bar, using the same mode. A
-    // bookmark failure is appended to the message but does not fail the (already
-    // successful) tab sync.
-    if (settings.autoSyncBookmarks) {
+    // Serialize the backend read-modify-write against manual popup operations
+    // and any overlapping tick, via the shared cross-context mutex. Local tab
+    // reads (above) and outcome recording (below) stay OUTSIDE the lock to keep
+    // its scope tight. Returns null for the "profile gone" bail so the caller
+    // records nothing (matching prior behavior).
+    const result = await withSyncLock(async () => {
+      // Read master fresh; if the profile file is gone, bail silently.
+      let master;
       try {
-        message += "; " + (await autoSyncBookmarks(provider, settings.autoSyncMode));
+        master = await provider.readProfile(activeFile);
       } catch (e) {
-        message += "; bookmarks failed: " + describeError(e);
+        if (e && e.code === "not_found") return null;
+        throw e;
       }
-    }
 
-    await recordAutoSync(true, message);
+      let ok = true;
+      let message =
+        settings.autoSyncMode === "replace"
+          ? await autoReplace(provider, activeFile, master, local)
+          : await autoPush(provider, activeFile, master, local);
+
+      // Optionally also sync the shared bookmarks bar, using the same mode. A
+      // bookmark failure now FAILS the recorded outcome (ok:false) instead of
+      // leaving a green result with a note tacked on — the sync as a whole did
+      // not fully succeed.
+      if (settings.autoSyncBookmarks) {
+        try {
+          message +=
+            "; " + (await autoSyncBookmarks(provider, settings.autoSyncMode));
+        } catch (e) {
+          message += "; bookmarks FAILED: " + describeError(e);
+          ok = false;
+        }
+      }
+      return { ok, message };
+    });
+
+    if (!result) return; // profile-gone bail: record nothing
+    await recordAutoSync(result.ok, result.message);
   } catch (e) {
     await recordAutoSync(false, describeError(e));
+  } finally {
+    autoSyncInFlight = false;
   }
 }
 
