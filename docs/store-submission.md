@@ -9,9 +9,9 @@ dashboard when submitting.
 **Name:** Tabula — Manual Tab Sync
 
 **Short description** (from `manifest.json`, used as the store's summary
-field — 132 character limit, this fits):
+field — 132 character limit, this is 130):
 
-> Push, pull, and merge your tabs and tab groups with a master list stored in your own private GitHub Gist. Manual, explicit, no tracking.
+> Push, pull, and merge your tabs, tab groups, and bookmarks with a master list in your own GitHub Gist or self-hosted Forgejo repo.
 
 **Suggested category:** Productivity (Chrome Web Store's "Tools" category is
 also a reasonable fit if Productivity isn't accepted for this listing).

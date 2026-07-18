@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Tabula — Manual Tab Sync",
   "version": "1.0.0",
-  "description": "Push, pull, and merge your tabs and tab groups with a master list stored in your own private GitHub Gist. Manual, explicit, no tracking.",
+  "description": "Push, pull, and merge your tabs, tab groups, and bookmarks with a master list in your own GitHub Gist or self-hosted Forgejo repo.",
   "permissions": ["tabs", "tabGroups", "storage", "alarms", "bookmarks"],
   "host_permissions": [
     "https://api.github.com/*",
