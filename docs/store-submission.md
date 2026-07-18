@@ -64,12 +64,12 @@ also a reasonable fit if Productivity isn't accepted for this listing).
 > **optional, off-by-default automatic sync**, turned on in Settings if you
 > want it: a timer (minimum one minute) that pushes or replaces your master
 > list unattended, a switch that syncs the profile you're leaving whenever
-> you change profiles, and a checkbox to fold bookmarks-bar sync into the
-> timer. Both are disabled out of the box — nothing syncs on its own until
-> you explicitly turn one on — and a small background service worker exists
-> only to run that optional timer; it never opens, closes, or rearranges
-> tabs or bookmarks on its own, it only reads them and writes to your
-> backend.
+> you confirm switching to a different one, and a checkbox to fold
+> bookmarks-bar sync into the timer. Both are disabled out of the box —
+> nothing syncs on its own until you explicitly turn one on — and a small
+> background service worker exists only to run that optional timer; it
+> never opens, closes, or rearranges tabs or bookmarks on its own, it only
+> reads them and writes to your backend.
 >
 > Settings also has a one-time **Migrate** tool that copies every profile
 > (and the bookmarks file, if present) from one connected backend to the

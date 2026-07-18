@@ -78,9 +78,16 @@ to Settings to reconnect.
 
 ## Usage
 
-**Profile dropdown** (top of the popup): switch between profiles, or pick
-"New profile…" to create one. You'll be asked to start it empty or seeded
-from your current window's tabs. Next to the active profile:
+**Profile dropdown** (top of the popup): lets you *preview* a profile —
+picking one from the list is display-only. It re-fetches that profile's
+master and updates the status row, but makes no write, changes no tabs, and
+triggers no sync. Pick "New profile…" instead to create one; you'll be asked
+to start it empty or seeded from your current window's tabs. The dropdown
+always opens on whichever profile is actually **in use** — the preview
+choice lives only in memory and resets every time you close and reopen the
+popup.
+
+Next to the dropdown, acting on whichever profile is currently **previewed**:
 - **Rename** — changes the display name and the master filename. On the
   Gist backend this is one atomic write. On Forgejo/Gitea, which has no
   equivalent multi-file write, it's a new file written first and then the
@@ -89,21 +96,33 @@ from your current window's tabs. Next to the active profile:
 - **Delete** — asks you to type the profile's exact name to confirm; you
   can't delete the only remaining profile.
 
-**Status row**: shows the local tab count, the master (Gist) tab count, and
-when master was last modified. None of this auto-refreshes — it updates only
-when the popup opens and when you click the **↺** button, which re-fetches
-the master file fresh.
+**Status row**: shows the local tab count, the *previewed* profile's master
+tab count, and when that master was last modified. None of this
+auto-refreshes — it updates when the popup opens, when you change the
+dropdown selection, and when you click the **↺** button, which re-fetches
+the master file fresh. Whenever the previewed profile isn't the one in use,
+a small hint line under the status row names which profile actually is, as
+a reminder that nothing has changed yet.
 
-**The four operations** — all act on the current window against the active
-profile's master file, and master is re-fetched fresh immediately before
-each one:
+**Primary actions** — two buttons, always visible:
+
+| Button | What it does |
+|---|---|
+| **Use this profile** | Replaces every tab in the current window with the *previewed* profile's master, then makes that profile the one **in use**. Requires confirmation stating the tab count that will be opened. Disabled while the previewed profile is already the one in use. If "Sync when switching profiles" is on in Settings, the *outgoing* (currently in-use) profile is synced first — a failure there is reported in the feedback line but doesn't block the switch. If every tab in the previewed profile fails to open, the switch itself doesn't happen: the window is left untouched and the previous profile stays in use. |
+| **Update** | Overwrites the **in-use** profile's master with the current window's tabs, regardless of what's previewed. Requires confirmation naming the profile and the tab count that will replace it. When you're previewing a different profile, the button's label changes to "Update '\<name\>'" so the target is unambiguous. |
+
+**Advanced (merge & bookmarks)** — a collapsed section (closed by default)
+holding four finer-grained tab operations plus the bookmarks-bar buttons.
+Unlike the primary actions, all four tab operations below act on the current
+window against the **previewed** profile's master file — not necessarily the
+one in use — and master is re-fetched fresh immediately before each one:
 
 | Button | Direction | What it does |
 |---|---|---|
 | Push → master (merge) | local → master | Adds current tabs to master. A tab is a duplicate if its URL already exists in master (trailing slash ignored); duplicates are skipped, not overwritten. New local groups are added to master's group list. |
 | Pull ← master (merge) | master → local | Opens master tabs that aren't already open locally, in master order, then applies their group titles/colors. Existing local tabs are never closed, moved, or altered. |
 | Replace local ← master | master → local, **destructive** | Closes **every tab in the current window** and reopens master's tabs exactly — same order, groups, colors, pinned state. Anything open locally that isn't in master is gone. Requires confirmation, which states the tab count that will be closed. |
-| Replace master ← local | local → master, **destructive** | Overwrites the profile file in the Gist with the current window's full state. Whatever was in master before is discarded. Requires confirmation naming the profile and the tab count that will replace it. |
+| Replace master ← local | local → master, **destructive** | Overwrites the previewed profile's file with the current window's full state. Whatever was in master before is discarded. Requires confirmation naming the profile and the tab count that will replace it. |
 
 Only **Replace local** and **Replace master** are destructive, and both are
 gated behind a confirmation dialog that says exactly what will be lost
@@ -115,11 +134,13 @@ so Tabula never reads or writes them.
 
 ## Bookmarks bar
 
-Below the tab buttons, the popup has a second, smaller row of four buttons
-for the bookmarks bar: **Push → master (merge)**, **Pull ← master (merge)**,
-**Replace local ← master**, **Replace master ← local**. They mirror the tab
-operations above, but act on your browser's bookmarks bar instead of the
-current window's tabs.
+Inside the same "Advanced" section, below the tab buttons, is a second,
+smaller row of four buttons for the bookmarks bar: **Push → master (merge)**,
+**Pull ← master (merge)**, **Replace local ← master**, **Replace master ←
+local**. They mirror the tab operations above, but act on your browser's
+bookmarks bar instead of the current window's tabs, and — since the
+bookmarks bar isn't per-profile (see below) — are unaffected by which
+profile is previewed.
 
 The bookmarks bar is global, not per-window and not per-profile, so its
 synced state lives in **one shared file** on the backend (`_bookmarks.json`
@@ -153,28 +174,43 @@ you turn one on:
 
 - **Sync on a timer** — runs a sync every N minutes (minimum 1, since that's
   the floor `chrome.alarms` enforces) in the background, without the popup
-  open. Mode is either **Push → master (merge)** (same semantics as the
-  popup's Push button) or **Replace master ← local** (overwrites master with
-  the window's current state every interval — destructive by nature, since
-  it runs unattended with no confirmation dialog). It acts on the
-  **last-focused normal browser window** and that window's **active
-  profile** — the worker has no notion of "the popup's current window," so
-  it uses whichever window you last actually looked at. If nothing is
-  configured yet, no window is open, or no profile is selected, the timer
-  fires and silently does nothing (no error is recorded).
-- **Sync when switching profiles** — when you switch the active profile in
+  open, against the **in-use profile** (previewing a different profile in
+  the popup never affects it). Mode is either **Push → master (merge)**
+  (same semantics as the popup's Push button) or **Replace master ← local**
+  (overwrites master with a window's current state every interval —
+  destructive by nature, since it runs unattended with no confirmation
+  dialog). Window selection differs by mode because the worker has no
+  notion of "the popup's current window": Push, being a non-destructive
+  merge, just uses the **last-focused normal browser window**, since the
+  worst case from picking the wrong one is a few extra tabs added to
+  master. Replace can't take that risk, so it only ever runs against the
+  **sole open normal window** if there's exactly one, or the **focused**
+  one if there are several; if several windows are open and none is
+  focused, that tick is skipped rather than guessing, and the skip is
+  recorded in the "last auto-sync" status. If nothing is configured yet, no
+  eligible window is open, or no profile is in use, the timer fires and
+  does nothing with no error recorded (the multiple-unfocused-windows
+  Replace case above is the one exception — that skip is recorded).
+- **Sync when switching profiles** — when you press **Use this profile** in
   the popup, this syncs the current window into the profile you're
-  *leaving* first, using its own Push or Replace mode. It never blocks or
-  delays the switch itself: on failure, the switch still happens and the
-  popup just reports that the sync failed.
+  *leaving* first, using its own Push or Replace mode, before that window's
+  tabs are replaced. Merely previewing a profile in the dropdown never
+  triggers this — only actually confirming the switch does. It never
+  blocks or delays the switch itself: on failure, the switch still happens
+  and the popup just reports that the sync failed.
 - **Also sync bookmarks bar** — a checkbox on the timer switch that, when
   on, also syncs the bookmarks bar (using the same Push/Replace mode) as
-  part of each timed run. It has no effect on sync-on-switch, which only
-  ever touches tab profiles.
+  part of each timed run. A bookmarks-sync failure marks that whole timed
+  run as failed in the "last auto-sync" status, even if the tab sync itself
+  succeeded. It has no effect on sync-on-switch, which only ever touches
+  tab profiles.
 
 All of these settings save immediately as you change them — there's no
 separate Save button on this card, and the background worker picks up
-timer changes right away via `chrome.storage.onChanged`.
+timer changes right away via `chrome.storage.onChanged`. A cross-context
+lock serializes every backend write — a manual sync from the popup and a
+timed run in the background can never interleave and clobber each other;
+whichever starts first finishes before the other proceeds.
 
 The card shows a **last auto-sync** status line (timestamp and outcome) so
 you can tell whether the timer is actually running, without it
@@ -254,7 +290,8 @@ manually.
   only ever reads local tabs/bookmarks and writes to your backend; it never
   opens, closes, or rearranges anything in your browser. Sync-on-switch is
   a separate setting that runs in the popup itself (only when you actually
-  switch profiles there), not in the background worker.
+  press "Use this profile" there — never on a dropdown preview), not in the
+  background worker.
 
 ## Troubleshooting
 
@@ -280,14 +317,18 @@ manually.
   removed it via Chrome's site permissions). Reconnect from Settings, which
   re-requests the permission prompt.
 - **Timed auto-sync doesn't seem to run** — check the "Last auto-sync" line
-  in Settings. If it's blank, the timer alarm hasn't fired yet or a
-  precondition silently wasn't met (no backend connected, no normal browser
-  window open, or no active profile) — these are treated as "nothing to do
-  yet," not errors, so nothing is recorded. If it shows a failure message,
-  that's the error from the last attempted sync.
+  in Settings. If it's blank, either the timer alarm hasn't fired yet, or a
+  precondition silently wasn't met (no backend connected, no eligible normal
+  browser window open, or no profile in use) — these are treated as
+  "nothing to do yet," not errors, so nothing is recorded. The one
+  not-silent skip is Replace mode with several windows open and none
+  focused, which *is* recorded (see Automatic sync above). If the status
+  line shows a failure message, that's the error from the last attempted
+  sync — including one where the tab sync itself succeeded but a bookmarks
+  sync failed alongside it.
 - **Sync-on-switch failed but the profile switched anyway** — that's by
   design: a sync-on-switch failure is reported in the popup's feedback line
-  but never blocks or reverts the switch itself.
+  but never blocks or reverts pressing "Use this profile."
 - **Migration reports some profiles failed** — the failed profiles are
   named in the result message; everything else still migrated. Nothing on
   the source was touched, so it's safe to just re-run Migrate afterward.
