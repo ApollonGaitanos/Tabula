@@ -1,6 +1,6 @@
-# Tabula — Manual Tab Sync
+# Kartela — Private Tab Syncing
 
-Tabula is a Chrome extension that keeps one or more "master" tab lists in a
+Kartela is a Chrome extension that keeps one or more "master" tab lists in a
 private GitHub Gist — or a private repo on your own Forgejo/Gitea instance —
 and lets you sync your current browser window against them, on demand.
 Every sync is manual by default: no polling, no timers, no scheduled syncs
@@ -8,20 +8,27 @@ unless you turn one on yourself. A small background service worker exists
 solely to drive an *optional* timed sync — it's off by default, and out of
 the box nothing happens automatically.
 
-There are no Tabula servers. The extension talks directly to your chosen
+There are no Kartela servers. The extension talks directly to your chosen
 backend's API using a token you provide, and stores your data there, in your
 own account: GitHub's API (`api.github.com`) and a Gist by default, or your
-own Forgejo/Gitea instance if you pick that backend in Settings. Tabula
+own Forgejo/Gitea instance if you pick that backend in Settings. Kartela
 collects no analytics and has nothing to send them to even if it wanted to.
+
+## Languages
+
+Kartela's UI is localized in English and Greek via `chrome.i18n`. Chrome
+picks the language automatically from your browser's UI language — English
+is the default/fallback for everyone else. There's no in-extension language
+switcher; to see the other language, change Chrome's display language.
 
 ## Install
 
-Tabula is not on the Chrome Web Store yet. Load it unpacked:
+Kartela is not on the Chrome Web Store yet. Load it unpacked:
 
 1. Open `chrome://extensions`.
 2. Turn on "Developer mode" (top right).
 3. Click "Load unpacked" and select the `tabula/` folder in this repo.
-4. Pin the Tabula icon to your toolbar if you want quick access.
+4. Pin the Kartela icon to your toolbar if you want quick access.
 
 ## Setup
 
@@ -33,7 +40,7 @@ Settings has a backend picker: **GitHub Gist** (the default, unchanged) or
 1. Create a GitHub **classic** Personal Access Token with only the `gist`
    scope checked — no other scopes are needed. See GitHub's guide:
    https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
-2. Click the Tabula icon, then the settings gear (or open the popup with no
+2. Click the Kartela icon, then the settings gear (or open the popup with no
    token configured, which links straight to Settings).
 3. Paste the token and click **Validate & Save**. This:
    - calls `GET /user` to confirm the token works,
@@ -41,21 +48,23 @@ Settings has a backend picker: **GitHub Gist** (the default, unchanged) or
    - creates a new **private** Gist called `tabula-data` (seeded with an
      empty `Default.json` profile) if none is found,
    - saves the token and the Gist ID to `chrome.storage.sync`.
-4. On first launch with no profiles, Tabula asks you to name your first
+4. On first launch with no profiles, Kartela asks you to name your first
    profile.
 
 Everything you sync lives inside that single `tabula-data` Gist, one JSON
-file per profile.
+file per profile. `tabula-data` is a historical name from before the
+extension was renamed from Tabula to Kartela — it's kept as-is so existing
+users' data keeps working; it's not a bug.
 
 ### Forgejo / Gitea
 
 1. On your Forgejo/Gitea instance, go to **Settings → Applications →
    Generate New Token** and create an access token with repository
    read/write scope.
-2. In Tabula's Settings, pick **Forgejo/Gitea** in the backend picker, then
+2. In Kartela's Settings, pick **Forgejo/Gitea** in the backend picker, then
    enter your instance URL and paste the token.
 3. Click **Validate & Save**. Chrome will show a one-time permission prompt
-   asking to grant Tabula access to your instance's origin — this is a
+   asking to grant Kartela access to your instance's origin — this is a
    runtime grant (from `optional_host_permissions`), not something baked
    into the extension at install time, because your instance's URL can't be
    known in advance. It's granted once and persists after that; if you
@@ -65,12 +74,13 @@ file per profile.
      account (created with `auto_init` so it has a default branch to commit
      against),
    - saves the instance URL, token, and owner login to `chrome.storage.sync`.
-4. On first launch with no profiles, Tabula asks you to name your first
+4. On first launch with no profiles, Kartela asks you to name your first
    profile.
 
 Profiles are stored as one JSON file per profile at the root of the
-`tabula-data` repo. Every sync write is a commit, so you get version history
-on your tab profiles for free — something the Gist backend doesn't give you.
+`tabula-data` repo (same historical name as the Gist above, kept for data
+compatibility). Every sync write is a commit, so you get version history on
+your tab profiles for free — something the Gist backend doesn't give you.
 
 If the granted permission is later revoked (e.g. you remove it in Chrome's
 site settings), the popup will say access isn't granted and point you back
@@ -130,7 +140,7 @@ before you can proceed.
 
 Tabs on `chrome://`, `chrome-extension://`, `edge://`, and `about:` URLs (and
 empty URLs) are always skipped — they can't be reopened on another machine,
-so Tabula never reads or writes them.
+so Kartela never reads or writes them.
 
 ## Bookmarks bar
 
@@ -265,7 +275,7 @@ manually.
   secret-Gist raw URLs are link-accessible on their own).
 - On the Forgejo/Gitea backend, the only additional network destination is
   the instance URL you entered — nowhere else. That host isn't baked into
-  the manifest (your instance's address can't be known in advance); Tabula
+  the manifest (your instance's address can't be known in advance); Kartela
   requests access to it at runtime via `chrome.permissions.request`, which
   Chrome shows you as a one-time permission prompt naming that exact origin.
   Your Forgejo token is sent only in requests to that origin.
@@ -278,7 +288,7 @@ manually.
   Gist link. The Forgejo/Gitea `tabula-data` repo is created **private**
   too, which on that platform is access-controlled by your instance's own
   permission model, not just an unlisted URL.
-- Tabula has no servers of its own and collects no analytics or usage data.
+- Kartela has no servers of its own and collects no analytics or usage data.
 - If you use bookmarks-bar sync (manually or via automatic sync), the
   titles and URLs of your bookmarks-bar links and folders are sent to your
   chosen backend the same way tab data is — same destinations, same token,
