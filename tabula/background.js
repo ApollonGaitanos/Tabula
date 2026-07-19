@@ -1,7 +1,7 @@
 /*
  * background.js — timed auto-sync service worker.
  *
- * WHY A BACKGROUND WORKER NOW EXISTS: the original Tabula design forbade one —
+ * WHY A BACKGROUND WORKER NOW EXISTS: the original Kartela design forbade one —
  * every sync was a deliberate button press in the popup. The owner has since
  * explicitly asked for timed, unattended sync, which the popup cannot provide
  * (it only runs while open). A single chrome.alarms-driven worker is the
@@ -96,10 +96,7 @@ async function reconcileAutoSyncAlarm() {
     // A failed alarm creation would otherwise disable auto-sync forever with no
     // trace. Surface it on the settings status line via lastAutoSync so the user
     // can see that scheduling — not syncing — is what broke.
-    await recordAutoSync(
-      false,
-      "Couldn't schedule auto-sync: " + describeError(e)
-    );
+    await recordAutoSync(false, t("bgScheduleFailed", describeError(e)));
   }
 }
 
@@ -121,7 +118,7 @@ function recordAutoSync(ok, message) {
 
 function describeError(e) {
   if (e && e.message) return e.message;
-  return "Something went wrong.";
+  return t("errGeneric");
 }
 
 /* ------------------------------------------------------------------ *
@@ -188,7 +185,7 @@ async function autoPush(provider, fileName, master, local) {
   }
   master.lastModified = new Date().toISOString();
   await provider.writeProfile(fileName, master);
-  return "Auto-push: added " + added + ", skipped " + skipped;
+  return t("bgAutoPush", [String(added), String(skipped)]);
 }
 
 // Replace semantics: overwrite the profile with the window's full state, but
@@ -201,7 +198,7 @@ async function autoReplace(provider, fileName, master, local) {
     groups: local.groups,
   };
   await provider.writeProfile(fileName, profile);
-  return "Auto-replace: wrote " + local.tabs.length + " tab(s) to master";
+  return t("bgAutoReplace", String(local.tabs.length));
 }
 
 // Sync the shared bookmarks set using the SAME mode as the tab sync. This is
@@ -216,7 +213,7 @@ async function autoSyncBookmarks(provider, mode) {
       lastModified: new Date().toISOString(),
       bar: local.bar,
     });
-    return "bookmarks: replaced with " + countBookmarkLinks(local.bar);
+    return t("bgBookmarksReplaced", String(countBookmarkLinks(local.bar)));
   }
   const master = await readBookmarksMaster(provider);
   const { bar, added, skipped } = mergeBookmarks(master.bar || [], local.bar);
@@ -224,7 +221,7 @@ async function autoSyncBookmarks(provider, mode) {
     lastModified: new Date().toISOString(),
     bar,
   });
-  return "bookmarks: added " + added + ", skipped " + skipped;
+  return t("bgBookmarksMerged", [String(added), String(skipped)]);
 }
 
 // The alarm handler body. Bails silently (no record) for expected not-ready
@@ -275,10 +272,7 @@ async function runAutoSync() {
       } else {
         win = wins.find((w) => w.focused === true) || null;
         if (!win) {
-          await recordAutoSync(
-            false,
-            "Skipped auto-replace: multiple windows and none focused"
-          );
+          await recordAutoSync(false, t("bgSkippedMultiWindow"));
           return;
         }
       }
@@ -323,7 +317,7 @@ async function runAutoSync() {
           message +=
             "; " + (await autoSyncBookmarks(provider, settings.autoSyncMode));
         } catch (e) {
-          message += "; bookmarks FAILED: " + describeError(e);
+          message += "; " + t("bgBookmarksFailed", describeError(e));
           ok = false;
         }
       }

@@ -1,7 +1,7 @@
 /*
- * popup.js — the whole Tabula UI. No background worker exists; every action
+ * popup.js — the whole Kartela UI. No background worker exists; every action
  * is user-initiated from here. common.js (loaded first) provides storage and
- * Gist helpers plus getCurrentTabs().
+ * Gist helpers plus getCurrentTabs(), plus t()/localizePage() for i18n.
  */
 
 (function () {
@@ -32,6 +32,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
+    localizePage();
     cacheElements();
     wireEvents();
     let config;
@@ -62,10 +63,10 @@
       }
       if (!granted) {
         el.noToken.classList.remove("hidden");
-        el.noToken.querySelector(".no-token-msg").textContent =
-          "Access to " +
-          config.forgejoUrl +
-          " isn't granted. Reconnect in Settings.";
+        el.noToken.querySelector(".no-token-msg").textContent = t(
+          "popupForgejoNoAccess",
+          config.forgejoUrl
+        );
         return;
       }
     }
@@ -208,14 +209,16 @@
     const inUse = inUseProfileMeta();
     // Make the target unambiguous when previewing a different profile.
     el.updateBtn.textContent =
-      inUse && !previewIsInUse ? "Update '" + inUse.displayName + "'" : "Update";
+      inUse && !previewIsInUse
+        ? t("msgUpdateNamed", inUse.displayName)
+        : t("popupUpdate");
 
     // Subtle inline hint whenever the preview differs from what's in use.
     if (hasSelection && state.inUseFile && !previewIsInUse) {
-      el.previewHint.textContent =
-        "Previewing — tabs unchanged. In use: " +
-        (inUse ? inUse.displayName : state.inUseFile) +
-        ".";
+      el.previewHint.textContent = t(
+        "msgPreviewHint",
+        inUse ? inUse.displayName : state.inUseFile
+      );
       el.previewHint.classList.remove("hidden");
     } else {
       el.previewHint.textContent = "";
@@ -228,7 +231,7 @@
    * ----------------------------------------------------------------- */
 
   async function loadProfiles() {
-    showFeedback("Loading profiles…");
+    showFeedback(t("msgLoadingProfiles"));
     let profiles;
     try {
       profiles = await state.provider.listProfiles();
@@ -244,7 +247,7 @@
     if (profiles.length === 0) {
       // First launch: token works, gist exists, but no profiles yet.
       populateSelect();
-      showFeedback("No profiles yet. Create your first one.");
+      showFeedback(t("msgNoProfilesYet"));
       await promptFirstProfile();
       return;
     }
@@ -273,7 +276,7 @@
     }
     const newOpt = document.createElement("option");
     newOpt.value = "__new__";
-    newOpt.textContent = "New profile…";
+    newOpt.textContent = t("popupNewProfileOption");
     el.profileSelect.appendChild(newOpt);
 
     updateActionAvailability();
@@ -317,17 +320,17 @@
     const meta = state.profiles.find((p) => p.fileName === outgoingFile);
     const label = meta ? meta.displayName : outgoingFile;
     const mode = settings.switchSyncMode === "replace" ? "replace" : "push";
-    showFeedback("Syncing '" + label + "' before switching…");
+    showFeedback(t("msgSyncingBeforeSwitch", label));
     try {
       if (mode === "replace") {
         await replaceMasterFile(outgoingFile);
       } else {
         await pushLocalToProfile(outgoingFile);
       }
-      return { text: "Synced '" + label + "' before switching.", kind: "ok" };
+      return { text: t("msgSyncedBeforeSwitch", label), kind: "ok" };
     } catch (e) {
       return {
-        text: "Couldn't sync '" + label + "': " + describeError(e),
+        text: t("msgCouldntSync", [label, describeError(e)]),
         kind: "error",
       };
     }
@@ -335,9 +338,9 @@
 
   async function promptFirstProfile() {
     const name = await modalPrompt({
-      message: "Name your first profile:",
-      placeholder: "e.g. Work",
-      confirmLabel: "Create",
+      message: t("promptFirstProfile"),
+      placeholder: t("promptFirstProfilePlaceholder"),
+      confirmLabel: t("btnCreate"),
       validate: validateProfileName,
     });
     if (name == null) return; // user cancelled — leave empty state
@@ -346,20 +349,20 @@
 
   async function onNewProfile() {
     const name = await modalPrompt({
-      message: "Name the new profile:",
-      placeholder: "e.g. Reading",
-      confirmLabel: "Next",
+      message: t("promptNewProfile"),
+      placeholder: t("promptNewProfilePlaceholder"),
+      confirmLabel: t("btnNext"),
       validate: validateProfileName,
     });
     if (name == null) return;
 
     // Ask whether to seed the new profile empty or from the current tabs.
     const choice = await modalChoice({
-      message: 'Start "' + name + '" empty or from current tabs?',
+      message: t("promptSeedChoice", name),
       buttons: [
-        { label: "Cancel", value: null },
-        { label: "Empty", value: "empty" },
-        { label: "From current tabs", value: "current", primary: true },
+        { label: t("btnCancel"), value: null },
+        { label: t("btnEmpty"), value: "empty" },
+        { label: t("btnFromCurrent"), value: "current", primary: true },
       ],
     });
     if (choice == null) return;
@@ -369,16 +372,16 @@
   // Validate a display name and guard against filename collisions.
   function validateProfileName(name) {
     const trimmed = (name || "").trim();
-    if (!trimmed) return "Enter a name.";
+    if (!trimmed) return t("valEnterName");
     const fileName = profileFileName(trimmed);
     if (state.profiles.some((p) => p.fileName === fileName)) {
-      return "A profile with a similar name already exists.";
+      return t("valNameExists");
     }
     return null;
   }
 
   async function createProfile(displayName, seed) {
-    showFeedback("Creating profile…");
+    showFeedback(t("msgCreatingProfile"));
     const fileName = profileFileName(displayName);
     let tabs = [];
     let groups = {};
@@ -403,33 +406,33 @@
     await setActiveProfile(fileName);
     populateSelect();
     await refreshStatus();
-    showFeedback('Created profile "' + displayName.trim() + '".', "ok");
+    showFeedback(t("msgProfileCreated", displayName.trim()), "ok");
   }
 
   async function onRename() {
     const target = previewProfileMeta();
     if (!target) return;
     const name = await modalPrompt({
-      message: "Rename profile:",
+      message: t("promptRename"),
       value: target.displayName,
-      confirmLabel: "Rename",
+      confirmLabel: t("btnRename"),
       validate: (n) => {
         const trimmed = (n || "").trim();
-        if (!trimmed) return "Enter a name.";
+        if (!trimmed) return t("valEnterName");
         const fileName = profileFileName(trimmed);
         // Allow keeping the same file; only collide with OTHER profiles.
         if (
           fileName !== target.fileName &&
           state.profiles.some((p) => p.fileName === fileName)
         ) {
-          return "A profile with a similar name already exists.";
+          return t("valNameExists");
         }
         return null;
       },
     });
     if (name == null) return;
 
-    showFeedback("Renaming…");
+    showFeedback(t("msgRenaming"));
     const newFileName = profileFileName(name.trim());
 
     // Serialize the read-modify-write (read current content → rename) against
@@ -464,29 +467,26 @@
     }
     populateSelect();
     await refreshStatus();
-    showFeedback('Renamed to "' + name.trim() + '".', "ok");
+    showFeedback(t("msgRenamed", name.trim()), "ok");
   }
 
   async function onDelete() {
     const target = previewProfileMeta();
     if (!target) return;
     if (state.profiles.length <= 1) {
-      showFeedback("Can't delete the only profile.", "error");
+      showFeedback(t("msgCantDeleteOnly"), "error");
       return;
     }
 
     // Typed-name confirmation: the user must type the exact display name.
     const confirmed = await modalTypedConfirm({
-      message:
-        'Delete profile "' +
-        target.displayName +
-        '"? This removes it from the Gist and cannot be undone.\n\nType the profile name to confirm:',
+      message: t("confirmDeleteProfile", target.displayName),
       expected: target.displayName,
-      confirmLabel: "Delete",
+      confirmLabel: t("btnDelete"),
     });
     if (!confirmed) return;
 
-    showFeedback("Deleting…");
+    showFeedback(t("msgDeleting"));
     // Serialize the delete against auto-sync so a tick can't recreate/write the
     // file around the delete. The typed-name modal above is OUTSIDE the lock.
     await withSyncLock(() => state.provider.deleteProfile(target.fileName));
@@ -504,7 +504,7 @@
     }
     populateSelect();
     await refreshStatus();
-    showFeedback('Deleted "' + target.displayName + '".', "ok");
+    showFeedback(t("msgDeleted", target.displayName), "ok");
   }
 
   // Metadata of the PREVIEWED (dropdown) profile.
@@ -529,7 +529,7 @@
       el.masterModified.textContent = "—";
       return;
     }
-    showFeedback("Refreshing…");
+    showFeedback(t("msgRefreshing"));
 
     // Show the cached snapshot immediately (display only) for snappiness while
     // the fresh fetch is in flight. The cache is never used for operations.
@@ -603,7 +603,7 @@
 
   async function doPush() {
     requireSelected();
-    showFeedback("Pushing to master…");
+    showFeedback(t("msgPushingMaster"));
     const { master, added, skipped } = await pushLocalToProfile(
       state.previewFile
     );
@@ -611,16 +611,7 @@
     el.masterCount.textContent = String(master.tabs.length);
     el.masterModified.textContent = formatTimestamp(master.lastModified);
 
-    showFeedback(
-      "Added " +
-        added +
-        plural(added, " tab", " tabs") +
-        " to master, " +
-        skipped +
-        plural(skipped, " duplicate", " duplicates") +
-        " skipped.",
-      "ok"
-    );
+    showFeedback(t("msgAddedTabs", [String(added), String(skipped)]), "ok");
   }
 
   /* ----------------------------------------------------------------- *
@@ -629,7 +620,7 @@
 
   async function doPull() {
     requireSelected();
-    showFeedback("Pulling from master…");
+    showFeedback(t("msgPullingMaster"));
     const local = await getCurrentTabs();
     const master = await state.provider.readProfile(state.previewFile);
 
@@ -639,7 +630,7 @@
     );
 
     if (toOpen.length === 0) {
-      showFeedback("Nothing to pull — everything is already open.", "ok");
+      showFeedback(t("msgNothingToPull"), "ok");
       return;
     }
 
@@ -670,11 +661,9 @@
     await applyGroups(created, master.groups || {}, true);
 
     await refreshStatus();
-    let msg =
-      "Opened " + created.length + plural(created.length, " tab", " tabs") + ".";
+    let msg = t("msgOpenedTabs", String(created.length));
     if (failed) {
-      msg +=
-        " " + failed + plural(failed, " tab", " tabs") + " couldn't be opened.";
+      msg += " " + t("msgTabsFailed", String(failed));
     }
     showFeedback(msg, failed ? "error" : "ok");
   }
@@ -688,37 +677,23 @@
     const master = await state.provider.readProfile(state.previewFile);
 
     const confirmed = await modalConfirm({
-      message:
-        "Replace local with master?\n\nThis CLOSES every tab in this window and reopens the " +
-        (master.tabs || []).length +
-        " master tab(s) exactly. Unsaved local tabs will be lost.",
-      confirmLabel: "Replace local",
+      message: t("confirmReplaceLocalBody", String((master.tabs || []).length)),
+      confirmLabel: t("popupReplaceLocalShort"),
       danger: true,
     });
     if (!confirmed) return;
 
-    showFeedback("Replacing local…");
+    showFeedback(t("msgReplacingLocal"));
     const res = await replaceWindowWithMaster(master);
     if (res.aborted) {
-      showFeedback(
-        "Nothing could be opened — the window was left untouched.",
-        "error"
-      );
+      showFeedback(t("msgNothingOpenedUntouched"), "error");
       return;
     }
 
     await refreshStatus();
-    let msg =
-      "Local replaced with " +
-      res.opened +
-      plural(res.opened, " tab", " tabs") +
-      " from master.";
+    let msg = t("msgLocalReplaced", String(res.opened));
     if (res.failed) {
-      msg +=
-        " " +
-        res.failed +
-        plural(res.failed, " tab", " tabs") +
-        " couldn't be opened.";
+      msg += " " + t("msgTabsFailed", String(res.failed));
     }
     showFeedback(msg, res.failed ? "error" : "ok");
   }
@@ -829,29 +804,21 @@
     const target = previewProfileMeta();
 
     const confirmed = await modalConfirm({
-      message:
-        'Replace master with local?\n\nThis OVERWRITES profile "' +
-        target.displayName +
-        '" with the current window (' +
-        local.tabs.length +
-        " tab(s)). The previous master content is discarded.",
-      confirmLabel: "Replace master",
+      message: t("confirmReplaceMasterBody", [
+        target.displayName,
+        String(local.tabs.length),
+      ]),
+      confirmLabel: t("popupReplaceMasterShort"),
       danger: true,
     });
     if (!confirmed) return;
 
-    showFeedback("Replacing master…");
+    showFeedback(t("msgReplacingMaster"));
     const profile = await replaceMasterFile(state.previewFile);
     state.master = profile;
     el.masterCount.textContent = String(profile.tabs.length);
     el.masterModified.textContent = formatTimestamp(profile.lastModified);
-    showFeedback(
-      "Master replaced with " +
-        profile.tabs.length +
-        plural(profile.tabs.length, " tab", " tabs") +
-        " from this window.",
-      "ok"
-    );
+    showFeedback(t("msgMasterReplaced", String(profile.tabs.length)), "ok");
   }
 
   /* ----------------------------------------------------------------- *
@@ -877,13 +844,11 @@
     const master = await state.provider.readProfile(state.previewFile);
 
     const confirmed = await modalConfirm({
-      message:
-        'Use "' +
-        targetName +
-        '"?\n\nThis CLOSES every tab in this window and reopens the ' +
-        (master.tabs || []).length +
-        " tab(s) from that profile. Unsaved local tabs will be lost.",
-      confirmLabel: "Use this profile",
+      message: t("confirmUseProfileBody", [
+        targetName,
+        String((master.tabs || []).length),
+      ]),
+      confirmLabel: t("popupUseProfile"),
       danger: true,
     });
     if (!confirmed) return;
@@ -897,16 +862,16 @@
       switchNote = await maybeSyncOnSwitch(state.inUseFile);
     }
 
-    showFeedback("Switching profile…");
+    showFeedback(t("msgSwitchingProfile"));
     const res = await replaceWindowWithMaster(master);
     if (res.aborted) {
       // Nothing could be opened: do NOT switch the in-use pointer — the window
       // is untouched and we're still using the previous profile.
       const inUse = inUseProfileMeta();
-      let msg =
-        "Nothing could be opened — still using '" +
-        (inUse ? inUse.displayName : state.inUseFile) +
-        "'.";
+      let msg = t(
+        "msgNothingStillUsing",
+        inUse ? inUse.displayName : state.inUseFile
+      );
       if (switchNote && switchNote.kind === "error") {
         msg = switchNote.text + " " + msg;
       }
@@ -920,19 +885,9 @@
     await refreshStatus();
     updateActionAvailability();
 
-    let msg =
-      "Now using '" +
-      targetName +
-      "' — opened " +
-      res.opened +
-      plural(res.opened, " tab", " tabs") +
-      ".";
+    let msg = t("msgNowUsing", [targetName, String(res.opened)]);
     if (res.failed) {
-      msg +=
-        " " +
-        res.failed +
-        plural(res.failed, " tab", " tabs") +
-        " couldn't be opened.";
+      msg += " " + t("msgTabsFailed", String(res.failed));
     }
     const hadSyncError = switchNote && switchNote.kind === "error";
     if (hadSyncError) msg = switchNote.text + " " + msg;
@@ -948,25 +903,23 @@
 
   async function doUpdate() {
     if (!state.inUseFile) {
-      throw new TabulaError("No profile in use yet.", "generic");
+      throw new TabulaError(t("msgNoProfileInUse"), "generic");
     }
     const inUse = inUseProfileMeta();
     const inUseName = inUse ? inUse.displayName : state.inUseFile;
     const local = await getCurrentTabs();
 
     const confirmed = await modalConfirm({
-      message:
-        'Replace master with local?\n\nThis OVERWRITES profile "' +
-        inUseName +
-        '" with the current window (' +
-        local.tabs.length +
-        " tab(s)). The previous master content is discarded.",
-      confirmLabel: "Update",
+      message: t("confirmReplaceMasterBody", [
+        inUseName,
+        String(local.tabs.length),
+      ]),
+      confirmLabel: t("popupUpdate"),
       danger: true,
     });
     if (!confirmed) return;
 
-    showFeedback("Updating master…");
+    showFeedback(t("msgUpdatingMaster"));
     const profile = await replaceMasterFile(state.inUseFile);
     // Only refresh the status display if the in-use profile is also the one
     // being previewed (otherwise the status row shows a different profile).
@@ -976,12 +929,7 @@
       el.masterModified.textContent = formatTimestamp(profile.lastModified);
     }
     showFeedback(
-      "Updated '" +
-        inUseName +
-        "' with " +
-        profile.tabs.length +
-        plural(profile.tabs.length, " tab", " tabs") +
-        " from this window.",
+      t("msgUpdated", [inUseName, String(profile.tabs.length)]),
       "ok"
     );
   }
@@ -1017,7 +965,7 @@
    * ----------------------------------------------------------------- */
 
   async function doBookmarksPush() {
-    showFeedback("Pushing bookmarks to master…");
+    showFeedback(t("msgPushingBookmarks"));
     const local = await readBookmarksBar();
     // Serialize the shared-bookmarks read-modify-write against auto-sync's own
     // bookmark sync (and any other popup write). Local bar read stays outside.
@@ -1031,75 +979,48 @@
       return { added, skipped };
     });
     showFeedback(
-      "Added " +
-        added +
-        plural(added, " bookmark", " bookmarks") +
-        " to master, " +
-        skipped +
-        plural(skipped, " duplicate", " duplicates") +
-        " skipped.",
+      t("msgAddedBookmarksMaster", [String(added), String(skipped)]),
       "ok"
     );
   }
 
   async function doBookmarksPull() {
-    showFeedback("Pulling bookmarks from master…");
+    showFeedback(t("msgPullingBookmarks"));
     const master = await readBookmarksMaster(state.provider);
     const { added, skipped } = await applyBookmarksToLocal(master.bar || [], {
       replace: false,
     });
-    showFeedback(
-      "Added " +
-        added +
-        plural(added, " bookmark", " bookmarks") +
-        ", " +
-        skipped +
-        plural(skipped, " duplicate", " duplicates") +
-        " skipped.",
-      "ok"
-    );
+    showFeedback(t("msgAddedBookmarks", [String(added), String(skipped)]), "ok");
   }
 
   async function doBookmarksReplaceLocal() {
     const master = await readBookmarksMaster(state.provider);
     const count = countBookmarkLinks(master.bar || []);
     const confirmed = await modalConfirm({
-      message:
-        "Replace local bookmarks with master?\n\nThis DELETES every bookmark on this bar and recreates the " +
-        count +
-        " master bookmark(s) exactly.",
-      confirmLabel: "Replace local",
+      message: t("confirmReplaceLocalBookmarks", String(count)),
+      confirmLabel: t("popupReplaceLocalShort"),
       danger: true,
     });
     if (!confirmed) return;
 
-    showFeedback("Replacing local bookmarks…");
+    showFeedback(t("msgReplacingLocalBookmarks"));
     const { added } = await applyBookmarksToLocal(master.bar || [], {
       replace: true,
     });
-    showFeedback(
-      "Local bookmarks replaced with " +
-        added +
-        plural(added, " bookmark", " bookmarks") +
-        " from master.",
-      "ok"
-    );
+    showFeedback(t("msgLocalBookmarksReplaced", String(added)), "ok");
   }
 
   async function doBookmarksReplaceMaster() {
     const local = await readBookmarksBar();
     const count = countBookmarkLinks(local.bar);
     const confirmed = await modalConfirm({
-      message:
-        "Replace master bookmarks with local?\n\nThis OVERWRITES the stored bookmark set with this bar's " +
-        count +
-        " bookmark(s). The previous stored bookmark set is discarded.",
-      confirmLabel: "Replace master",
+      message: t("confirmReplaceMasterBookmarks", String(count)),
+      confirmLabel: t("popupReplaceMasterShort"),
       danger: true,
     });
     if (!confirmed) return;
 
-    showFeedback("Replacing master bookmarks…");
+    showFeedback(t("msgReplacingMasterBookmarks"));
     // Serialize the write against auto-sync's bookmark sync. Modal above is
     // outside the lock.
     await withSyncLock(() =>
@@ -1108,13 +1029,7 @@
         bar: local.bar,
       })
     );
-    showFeedback(
-      "Master bookmark set replaced with " +
-        count +
-        plural(count, " bookmark", " bookmarks") +
-        " from this bar.",
-      "ok"
-    );
+    showFeedback(t("msgMasterBookmarksReplaced", String(count)), "ok");
   }
 
   /* ----------------------------------------------------------------- *
@@ -1182,16 +1097,15 @@
 
   async function offerRecreateContainer() {
     const isForgejo = state.backend === "forgejo";
-    const noun = isForgejo ? "repo" : "gist";
     const confirmed = await modalConfirm({
       message: isForgejo
-        ? "The tabula-data repo wasn't found (it may have been deleted). Recreate it?"
-        : "The Tabula gist wasn't found (it may have been deleted). Recreate a fresh private gist?",
-      confirmLabel: "Recreate",
+        ? t("popupRecreateRepoConfirm")
+        : t("popupRecreateGistConfirm"),
+      confirmLabel: t("btnRecreate"),
     });
     if (!confirmed) {
       showFeedback(
-        (isForgejo ? "Repo" : "Gist") + " not found. Reconnect in Settings.",
+        isForgejo ? t("popupRepoNotFound") : t("popupGistNotFound"),
         "error"
       );
       return;
@@ -1204,7 +1118,10 @@
     } else {
       await storageSet("sync", { gistId: state.provider.gistId });
     }
-    showFeedback("Recreated " + noun + ".", "ok");
+    showFeedback(
+      isForgejo ? t("popupRecreatedRepo") : t("popupRecreatedGist"),
+      "ok"
+    );
     await loadProfiles();
   }
 
@@ -1316,9 +1233,9 @@
     const value = await openModal({
       message,
       buttons: [
-        { label: "Cancel", value: false, isCancel: true },
+        { label: t("btnCancel"), value: false, isCancel: true },
         {
-          label: confirmLabel || "Confirm",
+          label: confirmLabel || t("btnConfirm"),
           value: true,
           primary: !danger,
           danger: !!danger,
@@ -1347,9 +1264,9 @@
       message,
       input: { type: "text", placeholder, value, validate },
       buttons: [
-        { label: "Cancel", value: null, isCancel: true },
+        { label: t("btnCancel"), value: null, isCancel: true },
         {
-          label: confirmLabel || "OK",
+          label: confirmLabel || t("btnOk"),
           isConfirm: true,
           primary: true,
         },
@@ -1367,12 +1284,12 @@
         type: "text",
         placeholder: expected,
         validate: (v) =>
-          (v || "").trim() === expected ? null : "Name doesn't match.",
+          (v || "").trim() === expected ? null : t("valNameNoMatch"),
       },
       buttons: [
-        { label: "Cancel", value: null, isCancel: true },
+        { label: t("btnCancel"), value: null, isCancel: true },
         {
-          label: confirmLabel || "Delete",
+          label: confirmLabel || t("btnDelete"),
           isConfirm: true,
           danger: true,
         },
@@ -1387,7 +1304,7 @@
 
   function requireSelected() {
     if (!state.previewFile) {
-      throw new TabulaError("Select or create a profile first.", "generic");
+      throw new TabulaError(t("msgSelectFirst"), "generic");
     }
   }
 
@@ -1416,10 +1333,6 @@
     await storageSet("local", { masterCache: next });
   }
 
-  function plural(n, singular, pluralForm) {
-    return n === 1 ? singular : pluralForm;
-  }
-
   function showFeedback(text, kind) {
     el.feedback.textContent = text || "";
     el.feedback.className = "feedback" + (kind ? " " + kind : "");
@@ -1434,6 +1347,6 @@
   // Turn any thrown value into a user-facing message.
   function describeError(e) {
     if (e && e.message) return e.message;
-    return "Something went wrong.";
+    return t("errGeneric");
   }
 })();

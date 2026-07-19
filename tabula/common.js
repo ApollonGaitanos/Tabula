@@ -1,5 +1,5 @@
 /*
- * common.js — shared helpers for Tabula.
+ * common.js — shared helpers for Kartela.
  * Loaded via <script> in both popup.html and settings.html (no build step,
  * so this file is included directly rather than imported as a module).
  *
@@ -17,10 +17,16 @@
  * ------------------------------------------------------------------ */
 
 const GITHUB_API = "https://api.github.com";
-const GIST_DESCRIPTION = "tabula-data"; // the single gist that holds all profiles
+// The single gist that holds all profiles. NOTE: this identifier is the app's
+// former name ("Tabula"). It is DELIBERATELY kept unchanged across the Kartela
+// rebrand — existing users' gists are discovered by this exact description, so
+// changing it would orphan their data. It is not user-facing.
+const GIST_DESCRIPTION = "tabula-data";
 
 // Forgejo/Gitea backend: profiles live as one JSON file per profile at the
 // root of a single private repo with this name (there is no gist API).
+// Like GIST_DESCRIPTION, this retains the historical "tabula" name for data
+// compatibility with existing installs and is intentionally NOT rebranded.
 const FORGEJO_REPO_NAME = "tabula-data";
 
 // The shared bookmarks set lives in ONE special file alongside the profile
@@ -55,6 +61,43 @@ function clampAutoSyncMinutes(value) {
   if (m < AUTO_SYNC_MIN_MINUTES) m = AUTO_SYNC_MIN_MINUTES;
   if (m > AUTO_SYNC_MAX_MINUTES) m = AUTO_SYNC_MAX_MINUTES;
   return m;
+}
+
+/* ------------------------------------------------------------------ *
+ * Localization (chrome.i18n)
+ *
+ * chrome.i18n.getMessage works identically in the popup, the settings page,
+ * and the service worker, so a single tiny wrapper serves all three contexts.
+ * `subs` is an optional string or array of strings for $1..$9 placeholders.
+ * ------------------------------------------------------------------ */
+
+function t(key, subs) {
+  return chrome.i18n.getMessage(key, subs);
+}
+
+// Localize a page in place from data-i18n* attributes. DOM-guarded because
+// common.js also loads in the DOM-less service worker (importScripts), where
+// there is nothing to localize. Called on DOMContentLoaded from popup.js and
+// settings.js. Supported attributes:
+//   data-i18n              -> textContent
+//   data-i18n-html         -> innerHTML (for hints containing <code>/<a>/…)
+//   data-i18n-title        -> title attribute
+//   data-i18n-placeholder  -> placeholder attribute
+//   data-i18n-aria         -> aria-label attribute
+function localizePage(root) {
+  if (typeof document === "undefined") return;
+  const scope = root || document;
+  const apply = (attr, fn) => {
+    scope.querySelectorAll("[" + attr + "]").forEach((node) => {
+      const msg = chrome.i18n.getMessage(node.getAttribute(attr));
+      if (msg) fn(node, msg);
+    });
+  };
+  apply("data-i18n", (n, m) => (n.textContent = m));
+  apply("data-i18n-html", (n, m) => (n.innerHTML = m));
+  apply("data-i18n-title", (n, m) => n.setAttribute("title", m));
+  apply("data-i18n-placeholder", (n, m) => n.setAttribute("placeholder", m));
+  apply("data-i18n-aria", (n, m) => n.setAttribute("aria-label", m));
 }
 
 /* ------------------------------------------------------------------ *
@@ -113,7 +156,7 @@ function storageRemove(area, keys) {
   });
 }
 
-// Convenience accessors for the specific keys Tabula uses.
+// Convenience accessors for the specific keys Kartela uses.
 async function getToken() {
   const { githubToken } = await storageGet("sync", ["githubToken"]);
   return githubToken || null;
@@ -309,10 +352,7 @@ async function githubFetch(path, token, options) {
     });
   } catch (e) {
     // fetch() rejects only on network-level failure (offline, DNS, CORS).
-    throw new TabulaError(
-      "Network error — check your connection and try again.",
-      "network"
-    );
+    throw new TabulaError(t("errNetworkGithub"), "network");
   }
 
   if (response.ok) {
@@ -327,10 +367,7 @@ async function githubFetch(path, token, options) {
 // and raw_url fetches can reuse it.
 async function throwForResponse(response) {
   if (response.status === 401) {
-    throw new TabulaError(
-      "Invalid or expired token. Re-enter your GitHub token in Settings.",
-      "auth"
-    );
+    throw new TabulaError(t("errAuthGithub"), "auth");
   }
 
   // 403 can be a rate limit (remaining === 0) — surface the reset time.
@@ -340,22 +377,16 @@ async function throwForResponse(response) {
     if (remaining === "0" && reset) {
       const resetDate = new Date(parseInt(reset, 10) * 1000);
       throw new TabulaError(
-        "GitHub rate limit reached. Try again after " +
-          resetDate.toLocaleTimeString() +
-          ".",
+        t("errRateLimit", resetDate.toLocaleTimeString()),
         "rate_limit",
         { resetDate }
       );
     }
-    throw new TabulaError(
-      "GitHub refused the request (403). Check the token's gist scope.",
-      "http",
-      { status: 403 }
-    );
+    throw new TabulaError(t("errForbiddenGithub"), "http", { status: 403 });
   }
 
   if (response.status === 404) {
-    throw new TabulaError("Not found (404).", "not_found", { status: 404 });
+    throw new TabulaError(t("errNotFound"), "not_found", { status: 404 });
   }
 
   let detail = "";
@@ -366,7 +397,7 @@ async function throwForResponse(response) {
     /* ignore parse errors */
   }
   throw new TabulaError(
-    "GitHub error (" + response.status + ")" + detail,
+    t("errGithubStatus", [String(response.status), detail]),
     "http",
     { status: response.status }
   );
@@ -460,17 +491,14 @@ async function readProfile(token, gistId, fileName) {
   const gist = await getGist(token, gistId);
   const file = (gist.files || {})[fileName];
   if (!file) {
-    throw new TabulaError(
-      'Profile "' + fileName + '" no longer exists in the gist.',
-      "not_found"
-    );
+    throw new TabulaError(t("errProfileGoneGist", fileName), "not_found");
   }
 
   if (!file.truncated && file.content) {
     try {
       return JSON.parse(file.content);
     } catch (e) {
-      throw new TabulaError("Profile file is corrupt (invalid JSON).", "generic");
+      throw new TabulaError(t("errProfileCorruptJson"), "generic");
     }
   }
 
@@ -482,13 +510,13 @@ async function readProfile(token, gistId, fileName) {
     text = await res.text();
   } catch (e) {
     if (e instanceof TabulaError) throw e;
-    throw new TabulaError("Network error while reading profile.", "network");
+    throw new TabulaError(t("errProfileReadNetwork"), "network");
   }
 
   try {
     return JSON.parse(text);
   } catch (e) {
-    throw new TabulaError("Profile file is corrupt (invalid JSON).", "generic");
+    throw new TabulaError(t("errProfileCorruptJson"), "generic");
   }
 }
 
@@ -581,10 +609,7 @@ async function forgejoFetch(base, token, path, options) {
     });
   } catch (e) {
     // fetch() rejects only on network-level failure (offline, DNS, bad host).
-    throw new TabulaError(
-      "Network error — check your connection and the instance URL.",
-      "network"
-    );
+    throw new TabulaError(t("errNetworkForgejo"), "network");
   }
 
   if (response.ok) {
@@ -594,13 +619,10 @@ async function forgejoFetch(base, token, path, options) {
 
   // Map status → code: 401 auth, 404 not_found, everything else http.
   if (response.status === 401) {
-    throw new TabulaError(
-      "Invalid or expired token. Re-enter your Forgejo token in Settings.",
-      "auth"
-    );
+    throw new TabulaError(t("errAuthForgejo"), "auth");
   }
   if (response.status === 404) {
-    throw new TabulaError("Not found (404).", "not_found", { status: 404 });
+    throw new TabulaError(t("errNotFound"), "not_found", { status: 404 });
   }
   let detail = "";
   try {
@@ -610,7 +632,7 @@ async function forgejoFetch(base, token, path, options) {
     /* ignore parse errors */
   }
   throw new TabulaError(
-    "Forgejo error (" + response.status + ")" + detail,
+    t("errForgejoStatus", [String(response.status), detail]),
     "http",
     { status: response.status }
   );
@@ -714,7 +736,7 @@ class ForgejoProvider {
           name: FORGEJO_REPO_NAME,
           private: true,
           auto_init: true,
-          description: "Tabula tab-sync profiles",
+          description: "Kartela tab-sync profiles",
         },
       });
       // Seed an initial Default profile so first launch has something to show.
@@ -776,10 +798,7 @@ class ForgejoProvider {
       file = await forgejoFetch(this.base, this.token, this._contentPath(fileName));
     } catch (e) {
       if (e.code === "not_found") {
-        throw new TabulaError(
-          'Profile "' + fileName + '" no longer exists in the repo.',
-          "not_found"
-        );
+        throw new TabulaError(t("errProfileGoneRepo", fileName), "not_found");
       }
       throw e;
     }
@@ -787,12 +806,12 @@ class ForgejoProvider {
     try {
       text = base64ToUtf8(file.content || "");
     } catch (e) {
-      throw new TabulaError("Profile file is corrupt (bad base64).", "generic");
+      throw new TabulaError(t("errProfileCorruptBase64"), "generic");
     }
     try {
       return JSON.parse(text);
     } catch (e) {
-      throw new TabulaError("Profile file is corrupt (invalid JSON).", "generic");
+      throw new TabulaError(t("errProfileCorruptJson"), "generic");
     }
   }
 
@@ -975,7 +994,7 @@ async function getBookmarksBarNode() {
     bar = nodes && nodes[0];
   }
   if (!bar) {
-    throw new TabulaError("Couldn't locate the bookmarks bar.", "generic");
+    throw new TabulaError(t("errBookmarksBarNotFound"), "generic");
   }
   return bar;
 }

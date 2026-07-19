@@ -20,6 +20,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
+    localizePage();
     el.backendRadios = Array.prototype.slice.call(
       document.querySelectorAll('input[name="backend"]')
     );
@@ -131,7 +132,7 @@
         switchSyncEnabled: el.switchEnabled.checked,
         switchSyncMode: el.switchMode.value === "replace" ? "replace" : "push",
       });
-      setStatus("Automatic sync settings saved.", "ok");
+      setStatus(t("settingsAutoSaved"), "ok");
     } catch (e) {
       setStatus(describeError(e), "error");
     }
@@ -143,11 +144,11 @@
       const { lastAutoSync } = await storageGet("local", ["lastAutoSync"]);
       if (!lastAutoSync) return;
       el.autoStatus.classList.remove("hidden");
-      el.autoStatus.textContent =
-        "Last auto-sync " +
-        formatTimestamp(lastAutoSync.at) +
-        " — " +
-        (lastAutoSync.message || (lastAutoSync.ok ? "OK" : "failed"));
+      el.autoStatus.textContent = t("settingsLastAutoSync", [
+        formatTimestamp(lastAutoSync.at),
+        lastAutoSync.message ||
+          (lastAutoSync.ok ? t("settingsOk") : t("settingsFailed")),
+      ]);
       el.autoStatus.classList.toggle("ok", !!lastAutoSync.ok);
       el.autoStatus.classList.toggle("error", !lastAutoSync.ok);
     } catch (e) {
@@ -224,15 +225,15 @@
       return {
         sourceKey: "forgejo",
         targetKey: "github",
-        sourceLabel: "Forgejo",
-        targetLabel: "GitHub Gist",
+        sourceLabel: t("settingsBackendForgejo"),
+        targetLabel: t("settingsBackendGithub"),
       };
     }
     return {
       sourceKey: "github",
       targetKey: "forgejo",
-      sourceLabel: "GitHub Gist",
-      targetLabel: "Forgejo",
+      sourceLabel: t("settingsBackendGithub"),
+      targetLabel: t("settingsBackendForgejo"),
     };
   }
 
@@ -253,8 +254,18 @@
     const src = creds[dir.sourceKey];
     const tgt = creds[dir.targetKey];
 
-    setConnLine(el.migrateSourceStatus, "Source", dir.sourceLabel, src.present);
-    setConnLine(el.migrateTargetStatus, "Target", dir.targetLabel, tgt.present);
+    setConnLine(
+      el.migrateSourceStatus,
+      t("settingsRoleSource"),
+      dir.sourceLabel,
+      src.present
+    );
+    setConnLine(
+      el.migrateTargetStatus,
+      t("settingsRoleTarget"),
+      dir.targetLabel,
+      tgt.present
+    );
 
     const ready = src.present && tgt.present;
     el.migrateBtn.disabled = !ready;
@@ -267,18 +278,19 @@
       if (!src.present) missing.push(dir.sourceLabel);
       if (!tgt.present) missing.push(dir.targetLabel);
       el.migrateConnectHint.classList.remove("hidden");
-      el.migrateConnectHint.textContent =
-        "Connect " +
-        missing.join(" and ") +
-        " first with the backend selector above (Validate & Save). Doing so" +
-        " switches your active backend — you can switch it back here after the" +
-        " migration, or with the selector.";
+      el.migrateConnectHint.textContent = t(
+        "settingsMigrateConnectHint",
+        missing.join(" " + t("settingsAnd") + " ")
+      );
     }
   }
 
   function setConnLine(node, role, label, present) {
-    node.textContent =
-      role + " (" + label + "): " + (present ? "connected" : "not connected");
+    node.textContent = t("settingsConnLine", [
+      role,
+      label,
+      present ? t("settingsConnected") : t("settingsNotConnected"),
+    ]);
     node.classList.toggle("ok", present);
     node.classList.toggle("error", !present);
   }
@@ -305,30 +317,17 @@
     const tgt = creds[dir.targetKey];
 
     if (!src.present || !tgt.present) {
-      setMigrateStatus("Both backends must be connected first.", "error");
+      setMigrateStatus(t("settingsBothConnected"), "error");
       return;
     }
 
     // Native confirm is safe here: Settings is a full tab, not a popup, so a
     // native dialog won't dismiss the page the way it would in the action popup.
     const ok = window.confirm(
-      "Migrate all profiles from " +
-        dir.sourceLabel +
-        " to " +
-        dir.targetLabel +
-        "?\n\n" +
-        "• Every profile is COPIED " +
-        dir.sourceLabel +
-        " → " +
-        dir.targetLabel +
-        ".\n" +
-        "• Target files with the same name WILL BE OVERWRITTEN.\n" +
-        "• The source (" +
-        dir.sourceLabel +
-        ") is never modified, and your local tabs are never touched."
+      t("settingsMigrateConfirm", [dir.sourceLabel, dir.targetLabel])
     );
     if (!ok) {
-      setMigrateStatus("Migration cancelled.", "");
+      setMigrateStatus(t("settingsMigrateCancelled"), "");
       return;
     }
 
@@ -344,11 +343,7 @@
       try {
         pattern = forgejoOriginPattern(forgejoCfg.forgejoUrl);
       } catch (e) {
-        setMigrateStatus(
-          "The stored Forgejo URL is invalid. Reconnect Forgejo in the" +
-            " connection card above.",
-          "error"
-        );
+        setMigrateStatus(t("settingsForgejoUrlInvalid"), "error");
         return;
       }
       let granted = false;
@@ -359,7 +354,7 @@
       }
       if (!granted) {
         setMigrateStatus(
-          "Requesting access to " + forgejoCfg.forgejoUrl + "…",
+          t("settingsRequestingAccess", forgejoCfg.forgejoUrl),
           "working"
         );
         try {
@@ -370,9 +365,7 @@
         }
         if (!granted) {
           setMigrateStatus(
-            "Permission to access " +
-              forgejoCfg.forgejoUrl +
-              " was declined. Nothing was migrated.",
+            t("settingsPermissionDeclinedMigrate", forgejoCfg.forgejoUrl),
             "error"
           );
           return;
@@ -386,21 +379,18 @@
       // A Forgejo source needs its owner resolved before file paths can be
       // built; verify it if the stored owner is somehow absent.
       if (src.backend === "forgejo" && !src.forgejoOwner) {
-        setMigrateStatus("Verifying " + dir.sourceLabel + "…", "working");
+        setMigrateStatus(t("settingsVerifying", dir.sourceLabel), "working");
         await source.verify();
       }
 
       // Verify the TARGET token, then make sure its container (gist/repo) exists.
-      setMigrateStatus("Verifying " + dir.targetLabel + "…", "working");
+      setMigrateStatus(t("settingsVerifying", dir.targetLabel), "working");
       const targetUser = await target.verify();
 
-      setMigrateStatus("Preparing " + dir.targetLabel + " storage…", "working");
+      setMigrateStatus(t("settingsPreparingStorage", dir.targetLabel), "working");
       await target.ensureContainer();
 
-      setMigrateStatus(
-        "Reading profiles from " + dir.sourceLabel + "…",
-        "working"
-      );
+      setMigrateStatus(t("settingsReadingProfiles", dir.sourceLabel), "working");
       const profiles = await source.listProfiles();
 
       const failures = [];
@@ -410,7 +400,7 @@
       // on the source means there's nothing to copy, so a not_found is skipped
       // silently. Any other error is collected like a profile failure.
       let bookmarksMigrated = 0;
-      setMigrateStatus("Migrating bookmarks…", "working");
+      setMigrateStatus(t("settingsMigratingBookmarks"), "working");
       try {
         const bmData = await source.readProfile(BOOKMARKS_FILE);
         await target.writeProfile(BOOKMARKS_FILE, bmData);
@@ -422,14 +412,12 @@
       if (!profiles.length) {
         if (bookmarksMigrated) {
           setMigrateStatus(
-            "No profiles on " + dir.sourceLabel + " — migrated bookmarks only.",
+            t("settingsNoProfilesBookmarksOnly", dir.sourceLabel),
             failures.length ? "error" : "ok"
           );
         } else {
           setMigrateStatus(
-            "No profiles found on " +
-              dir.sourceLabel +
-              " — nothing to migrate.",
+            t("settingsNoProfiles", dir.sourceLabel),
             failures.length ? "error" : "ok"
           );
         }
@@ -440,13 +428,11 @@
       for (let i = 0; i < profiles.length; i++) {
         const p = profiles[i];
         setMigrateStatus(
-          "Migrating " +
-            (i + 1) +
-            "/" +
-            profiles.length +
-            ": " +
-            p.displayName +
-            "…",
+          t("settingsMigratingProfile", [
+            String(i + 1),
+            String(profiles.length),
+            p.displayName,
+          ]),
           "working"
         );
         // Per-profile isolation: one failure collects its name and moves on so
@@ -460,17 +446,16 @@
         }
       }
 
-      let msg =
-        "Migrated " + migrated + " profile" + (migrated === 1 ? "" : "s") + ".";
-      if (bookmarksMigrated) msg += " Bookmarks migrated.";
+      let msg = t("settingsMigratedCount", String(migrated));
+      if (bookmarksMigrated) msg += " " + t("settingsBookmarksMigrated");
       const kind = failures.length ? "error" : "ok";
       if (failures.length) {
         msg +=
           " " +
-          failures.length +
-          " failed: " +
-          failures.join(", ") +
-          ".";
+          t("settingsMigrateFailures", [
+            String(failures.length),
+            failures.join(", "),
+          ]);
       }
 
       // Only offer to switch the active backend after a fully clean run.
@@ -486,11 +471,11 @@
               null;
           }
           await storageSet("sync", toSet);
-          msg += " Active backend switched to " + dir.targetLabel + ".";
+          msg += " " + t("settingsActiveSwitched", dir.targetLabel);
           // Reflect the switch in the connection card + backend selector.
           await reflectStoredState();
         } catch (e) {
-          msg += " (Couldn't switch active backend: " + describeError(e) + ")";
+          msg += " " + t("settingsCouldntSwitch", describeError(e));
         }
       }
 
@@ -534,8 +519,8 @@
     el.forgejoPanel.classList.toggle("hidden", backend !== "forgejo");
     el.privacy.textContent =
       backend === "forgejo"
-        ? "Your token and tabs go only to your Forgejo instance. Tabula has no servers and collects nothing."
-        : "Your token and tabs go only to api.github.com. Tabula has no servers and collects nothing.";
+        ? t("settingsPrivacyForgejo")
+        : t("settingsPrivacyGithub");
   }
 
   /* ----------------------------------------------------------------- *
@@ -555,15 +540,15 @@
       el.disconnect.classList.remove("hidden");
       if (config.backend === "forgejo") {
         el.forgejoUrl.value = config.forgejoUrl || "";
-        el.forgejoToken.placeholder = "•••••••• (token saved)";
+        el.forgejoToken.placeholder = t("settingsTokenSavedPlaceholder");
         showConnected("forgejo", {
           repo: (config.forgejoOwner || "?") + "/" + "tabula-data",
         });
-        setStatus("Connected to Forgejo. Re-enter details to replace.", "ok");
+        setStatus(t("settingsConnectedForgejoReenter"), "ok");
       } else {
-        el.token.placeholder = "•••••••• (token saved)";
+        el.token.placeholder = t("settingsTokenSavedPlaceholder");
         showConnected("github", { gistId: config.gistId });
-        setStatus("Connected. Enter a new token to replace it.", "ok");
+        setStatus(t("settingsConnectedGithubReenter"), "ok");
       }
     } catch (e) {
       setStatus(describeError(e), "error");
@@ -588,7 +573,7 @@
   function toggleVisibility(input, btn) {
     const showing = input.type === "text";
     input.type = showing ? "password" : "text";
-    btn.textContent = showing ? "Show" : "Hide";
+    btn.textContent = showing ? t("settingsShow") : t("settingsHide");
   }
 
   /* ----------------------------------------------------------------- *
@@ -602,21 +587,21 @@
   async function onSaveGithub() {
     const token = el.token.value.trim();
     if (!token) {
-      setStatus("Enter a token first.", "error");
+      setStatus(t("settingsEnterToken"), "error");
       return;
     }
 
     el.save.disabled = true;
     try {
       // 1) Verify the token by fetching the authenticated user.
-      setStatus("Verifying token…", "working");
+      setStatus(t("settingsVerifyingToken"), "working");
       const user = await verifyToken(token);
 
       // 2) Locate an existing tabula-data gist, else create one.
-      setStatus("Looking for your Tabula gist…", "working");
+      setStatus(t("settingsLookingGist"), "working");
       let gistId = await findTabulaGist(token);
       if (!gistId) {
-        setStatus("Creating a new private gist…", "working");
+        setStatus(t("settingsCreatingGist"), "working");
         gistId = await createTabulaGist(token);
       }
 
@@ -624,16 +609,12 @@
       //    Chrome instance picks them up automatically.
       await storageSet("sync", { backend: "github", githubToken: token, gistId });
 
+      const login = user.login || t("settingsYourAccount");
       el.token.value = "";
-      el.token.placeholder = "•••••••• (token saved)";
-      showConnected("github", { gistId, user: user.login || "your account" });
+      el.token.placeholder = t("settingsTokenSavedPlaceholder");
+      showConnected("github", { gistId, user: login });
       el.disconnect.classList.remove("hidden");
-      setStatus(
-        "Connected as " +
-          (user.login || "your account") +
-          ". You're ready to sync.",
-        "ok"
-      );
+      setStatus(t("settingsConnectedAs", login), "ok");
       await refreshMigrateState();
     } catch (e) {
       setStatus(describeError(e), "error");
@@ -646,11 +627,11 @@
     const rawUrl = el.forgejoUrl.value.trim();
     const token = el.forgejoToken.value.trim();
     if (!rawUrl) {
-      setStatus("Enter your instance URL.", "error");
+      setStatus(t("settingsEnterUrl"), "error");
       return;
     }
     if (!token) {
-      setStatus("Enter an access token.", "error");
+      setStatus(t("settingsEnterAccessToken"), "error");
       return;
     }
 
@@ -659,7 +640,7 @@
     try {
       originPattern = forgejoOriginPattern(url);
     } catch (e) {
-      setStatus("That doesn't look like a valid URL.", "error");
+      setStatus(t("settingsInvalidUrl"), "error");
       return;
     }
 
@@ -672,15 +653,12 @@
       // permission prompt itself does NOT consume the gesture, so this is safe.
       const granted = await permissionsRequest([originPattern]);
       if (!granted) {
-        setStatus(
-          "Permission to access " + url + " was declined. Nothing was saved.",
-          "error"
-        );
+        setStatus(t("settingsPermissionDeclinedSave", url), "error");
         return;
       }
 
       // 1) Verify the token by fetching the authenticated user.
-      setStatus("Verifying token…", "working");
+      setStatus(t("settingsVerifyingToken"), "working");
       const provider = makeProvider({
         backend: "forgejo",
         forgejoUrl: url,
@@ -689,7 +667,7 @@
       const { login } = await provider.verify();
 
       // 2) Find-or-create the private tabula-data repo (seeds Default.json).
-      setStatus("Preparing the tabula-data repo…", "working");
+      setStatus(t("settingsPreparingRepo"), "working");
       await provider.ensureContainer();
       const owner = provider.owner || login;
 
@@ -702,13 +680,10 @@
       });
 
       el.forgejoToken.value = "";
-      el.forgejoToken.placeholder = "•••••••• (token saved)";
+      el.forgejoToken.placeholder = t("settingsTokenSavedPlaceholder");
       showConnected("forgejo", { repo: owner + "/tabula-data" });
       el.disconnect.classList.remove("hidden");
-      setStatus(
-        "Connected to " + url + " as " + login + ". You're ready to sync.",
-        "ok"
-      );
+      setStatus(t("settingsConnectedForgejoAs", [url, login]), "ok");
       await refreshMigrateState();
     } catch (e) {
       setStatus(describeError(e), "error");
@@ -736,13 +711,13 @@
           "forgejoOwner",
         ]);
         el.forgejoToken.value = "";
-        el.forgejoToken.placeholder = "token…";
-        setStatus("Disconnected. Your Forgejo repo was not deleted.", "ok");
+        el.forgejoToken.placeholder = t("settingsForgejoTokenPlaceholder");
+        setStatus(t("settingsDisconnectedForgejo"), "ok");
       } else {
         await storageRemove("sync", ["backend", "githubToken", "gistId"]);
         el.token.value = "";
-        el.token.placeholder = "ghp_… (classic, gist scope)";
-        setStatus("Disconnected. Your Gist was not deleted.", "ok");
+        el.token.placeholder = t("settingsGithubTokenPlaceholder");
+        setStatus(t("settingsDisconnectedGithub"), "ok");
       }
       el.connectedInfo.classList.add("hidden");
       el.disconnect.classList.add("hidden");
@@ -765,6 +740,6 @@
 
   function describeError(e) {
     if (e && e.message) return e.message;
-    return "Something went wrong.";
+    return t("errGeneric");
   }
 })();

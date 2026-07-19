@@ -4,46 +4,47 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
-    <title>Tabula — Settings</title>
+    <title data-i18n="settingsTitle">Kartela — Settings</title>
     <link rel="stylesheet" href="settings.css" />
   </head>
   <body>
     <main class="wrap">
-      <h1>Tabula Settings</h1>
-      <p class="lead">
-        Tabula stores your tab profiles in your own private storage. Pick a
+      <h1 data-i18n="settingsHeading">Kartela Settings</h1>
+      <p class="lead" data-i18n="settingsLead">
+        Kartela stores your tab profiles in your own private storage. Pick a
         backend and connect to get started.
       </p>
 
       <section class="card">
-        <div class="backend-selector" role="radiogroup" aria-label="Storage backend">
+        <div class="backend-selector" role="radiogroup" data-i18n-aria="settingsBackendAria" aria-label="Storage backend">
           <label class="segment">
             <input type="radio" name="backend" value="github" />
-            <span>GitHub Gist</span>
+            <span data-i18n="settingsGithubGist">GitHub Gist</span>
           </label>
           <label class="segment">
             <input type="radio" name="backend" value="forgejo" />
-            <span>Forgejo / Gitea</span>
+            <span data-i18n="settingsForgejoGitea">Forgejo / Gitea</span>
           </label>
         </div>
 
         <!-- GitHub Gist panel -->
         <div id="github-panel" class="backend-panel">
-          <label class="field-label" for="token">GitHub Personal Access Token</label>
+          <label class="field-label" for="token" data-i18n="settingsGithubToken">GitHub Personal Access Token</label>
           <div class="token-row">
             <input
               id="token"
               type="password"
               class="text-input"
+              data-i18n-placeholder="settingsGithubTokenPlaceholder"
               placeholder="ghp_… (classic, gist scope)"
               autocomplete="off"
               spellcheck="false"
             />
-            <button id="toggle-visibility" class="ghost-btn" type="button">
+            <button id="toggle-visibility" class="ghost-btn" type="button" data-i18n="settingsShow">
               Show
             </button>
           </div>
-          <p class="hint">
+          <p class="hint" data-i18n-html="settingsGithubHintHtml">
             The token needs only the <code>gist</code> scope.
             <a
               id="how-to-link"
@@ -57,7 +58,7 @@
 
         <!-- Forgejo / Gitea panel -->
         <div id="forgejo-panel" class="backend-panel hidden">
-          <label class="field-label" for="forgejo-url">Instance URL</label>
+          <label class="field-label" for="forgejo-url" data-i18n="settingsInstanceUrl">Instance URL</label>
           <input
             id="forgejo-url"
             type="text"
@@ -66,21 +67,22 @@
             autocomplete="off"
             spellcheck="false"
           />
-          <label class="field-label spaced" for="forgejo-token">Access Token</label>
+          <label class="field-label spaced" for="forgejo-token" data-i18n="settingsAccessToken">Access Token</label>
           <div class="token-row">
             <input
               id="forgejo-token"
               type="password"
               class="text-input"
+              data-i18n-placeholder="settingsForgejoTokenPlaceholder"
               placeholder="token…"
               autocomplete="off"
               spellcheck="false"
             />
-            <button id="forgejo-toggle-visibility" class="ghost-btn" type="button">
+            <button id="forgejo-toggle-visibility" class="ghost-btn" type="button" data-i18n="settingsShow">
               Show
             </button>
           </div>
-          <p class="hint">
+          <p class="hint" data-i18n-html="settingsForgejoHintHtml">
             The token needs repository <strong>read/write</strong> scope. Create
             one on your instance under
             <em>Settings → Applications → Generate New Token</em>. Profiles are
@@ -90,10 +92,10 @@
         </div>
 
         <div class="button-row">
-          <button id="save-btn" class="primary-btn" type="button">
+          <button id="save-btn" class="primary-btn" type="button" data-i18n="settingsValidateSave">
             Validate &amp; Save
           </button>
-          <button id="disconnect-btn" class="danger-btn hidden" type="button">
+          <button id="disconnect-btn" class="danger-btn hidden" type="button" data-i18n="settingsDisconnect">
             Disconnect
           </button>
         </div>
@@ -102,22 +104,23 @@
       </section>
 
       <section id="connected-info" class="card muted hidden">
-        <h2 class="card-title">Connected</h2>
+        <h2 class="card-title" data-i18n="settingsConnectedTitle">Connected</h2>
         <p id="connected-github" class="connected-detail">
-          Signed in as <strong id="gh-user">—</strong>.
+          <span data-i18n="settingsSignedInAs">Signed in as</span>
+          <strong id="gh-user">—</strong>
         </p>
         <p id="connected-gist" class="connected-detail">
-          Gist: <code id="gist-id">—</code>
+          <span data-i18n="settingsGistLabel">Gist:</span> <code id="gist-id">—</code>
         </p>
         <p id="connected-forgejo" class="connected-detail hidden">
-          Repo: <code id="forgejo-repo">—</code>
+          <span data-i18n="settingsRepoLabel">Repo:</span> <code id="forgejo-repo">—</code>
         </p>
       </section>
 
       <section class="card">
-        <h2 class="card-title">Automatic sync</h2>
-        <p class="hint auto-lead">
-          Tabula normally syncs only when you press a button. These options let
+        <h2 class="card-title" data-i18n="settingsAutoSyncTitle">Automatic sync</h2>
+        <p class="hint auto-lead" data-i18n="settingsAutoLead">
+          Kartela normally syncs only when you press a button. These options let
           a background worker sync for you. Both toggles are independent and may
           be on at once.
         </p>
@@ -125,11 +128,11 @@
         <!-- Timed background sync -->
         <label class="switch-label">
           <input type="checkbox" id="auto-sync-enabled" />
-          <span>Sync on a timer</span>
+          <span data-i18n="settingsSyncTimer">Sync on a timer</span>
         </label>
         <div class="auto-controls">
           <label class="inline-field" for="auto-sync-minutes">
-            Every
+            <span data-i18n="settingsEvery">Every</span>
             <input
               id="auto-sync-minutes"
               type="number"
@@ -138,26 +141,26 @@
               step="1"
               value="15"
             />
-            minutes
+            <span data-i18n="settingsMinutes">minutes</span>
           </label>
           <label class="inline-field" for="auto-sync-mode">
-            Mode
+            <span data-i18n="settingsMode">Mode</span>
             <select id="auto-sync-mode" class="select-input">
-              <option value="push">Push → master (merge)</option>
-              <option value="replace">Replace master ← local</option>
+              <option value="push" data-i18n="settingsModePushMaster">Push → master (merge)</option>
+              <option value="replace" data-i18n="settingsModeReplaceMaster">Replace master ← local</option>
             </select>
           </label>
         </div>
-        <p class="hint warn">
+        <p class="hint warn" data-i18n-html="settingsWarnReplaceHtml">
           <strong>Replace</strong> overwrites master with the focused window's
           tabs every interval — anything only in master is lost.
         </p>
 
         <label class="switch-label bookmarks-toggle">
           <input type="checkbox" id="auto-sync-bookmarks" />
-          <span>Also sync bookmarks bar</span>
+          <span data-i18n="settingsAlsoBookmarks">Also sync bookmarks bar</span>
         </label>
-        <p class="hint">
+        <p class="hint" data-i18n="settingsBookmarksHint">
           When on, each timed sync also syncs your bookmarks bar to the backend
           using the same mode. Your local bookmarks are only ever read, never
           changed, by the background worker.
@@ -166,18 +169,18 @@
         <!-- Sync the outgoing profile on "Use this profile" -->
         <label class="switch-label spaced-top">
           <input type="checkbox" id="switch-sync-enabled" />
-          <span>Sync the outgoing profile when you press Use this profile</span>
+          <span data-i18n="settingsSwitchSync">Sync the outgoing profile when you press Use this profile</span>
         </label>
         <div class="auto-controls">
           <label class="inline-field" for="switch-sync-mode">
-            Mode
+            <span data-i18n="settingsMode">Mode</span>
             <select id="switch-sync-mode" class="select-input">
-              <option value="push">Push → outgoing master (merge)</option>
-              <option value="replace">Replace outgoing master ← local</option>
+              <option value="push" data-i18n="settingsModePushOutgoing">Push → outgoing master (merge)</option>
+              <option value="replace" data-i18n="settingsModeReplaceOutgoing">Replace outgoing master ← local</option>
             </select>
           </label>
         </div>
-        <p class="hint">
+        <p class="hint" data-i18n-html="settingsSwitchHintHtml">
           When you press <strong>Use this profile</strong>, this window is first
           synced into the profile you're leaving (before its tabs are replaced).
           Merely previewing a profile in the dropdown never syncs.
@@ -189,18 +192,18 @@
       </section>
 
       <section class="card">
-        <h2 class="card-title">Migrate data</h2>
-        <p class="hint auto-lead">
+        <h2 class="card-title" data-i18n="settingsMigrateTitle">Migrate data</h2>
+        <p class="hint auto-lead" data-i18n-html="settingsMigrateLeadHtml">
           Copy every profile from one backend to the other. Profiles are
           <strong>copied</strong> — the source is never changed, and your local
           tabs are never touched. Files with the same name on the target are
           overwritten.
         </p>
 
-        <label class="field-label" for="migrate-direction">Direction</label>
+        <label class="field-label" for="migrate-direction" data-i18n="settingsDirection">Direction</label>
         <select id="migrate-direction" class="select-input full">
-          <option value="github-forgejo">GitHub Gist → Forgejo</option>
-          <option value="forgejo-github">Forgejo → GitHub Gist</option>
+          <option value="github-forgejo" data-i18n="settingsDirGithubForgejo">GitHub Gist → Forgejo</option>
+          <option value="forgejo-github" data-i18n="settingsDirForgejoGithub">Forgejo → GitHub Gist</option>
         </select>
 
         <p id="migrate-source-status" class="migrate-conn"></p>
@@ -210,11 +213,11 @@
 
         <label class="switch-label migrate-switch" id="migrate-switch-row">
           <input type="checkbox" id="migrate-switch-active" checked />
-          <span>Switch my active backend to the target after a successful migration</span>
+          <span data-i18n="settingsMigrateSwitch">Switch my active backend to the target after a successful migration</span>
         </label>
 
         <div class="button-row">
-          <button id="migrate-btn" class="primary-btn" type="button">
+          <button id="migrate-btn" class="primary-btn" type="button" data-i18n="settingsMigrate">
             Migrate
           </button>
         </div>
@@ -222,8 +225,8 @@
         <p id="migrate-status" class="status-line" role="status" aria-live="polite"></p>
       </section>
 
-      <p id="privacy-note" class="privacy">
-        Your token and tabs go only to api.github.com. Tabula has no servers and
+      <p id="privacy-note" class="privacy" data-i18n="settingsPrivacyGithub">
+        Your token and tabs go only to api.github.com. Kartela has no servers and
         collects nothing.
       </p>
     </main>

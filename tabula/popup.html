@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
-    <title>Tabula</title>
+    <title data-i18n="popupTitle">Kartela</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -12,10 +12,12 @@
     <main id="main" class="hidden">
       <header class="header">
         <div class="profile-picker">
-          <select id="profile-select" aria-label="Preview profile"></select>
+          <select id="profile-select" data-i18n-aria="popupPreviewProfileAria" aria-label="Preview profile"></select>
           <button
             id="rename-btn"
             class="icon-btn"
+            data-i18n-title="popupRenameProfile"
+            data-i18n-aria="popupRenameProfile"
             title="Rename selected profile"
             aria-label="Rename selected profile"
           >
@@ -24,6 +26,8 @@
           <button
             id="delete-btn"
             class="icon-btn"
+            data-i18n-title="popupDeleteProfile"
+            data-i18n-aria="popupDeleteProfile"
             title="Delete selected profile"
             aria-label="Delete selected profile"
           >
@@ -33,6 +37,8 @@
         <button
           id="settings-btn"
           class="icon-btn"
+          data-i18n-title="popupSettings"
+          data-i18n-aria="popupOpenSettings"
           title="Settings"
           aria-label="Open settings"
         >
@@ -40,22 +46,24 @@
         </button>
       </header>
 
-      <section class="status" aria-label="Sync status">
+      <section class="status" data-i18n-aria="popupSyncStatusAria" aria-label="Sync status">
         <div class="status-item">
-          <span class="status-label">Local</span>
+          <span class="status-label" data-i18n="popupLocal">Local</span>
           <span id="local-count" class="status-value">—</span>
         </div>
         <div class="status-item">
-          <span class="status-label">Master</span>
+          <span class="status-label" data-i18n="popupMaster">Master</span>
           <span id="master-count" class="status-value">—</span>
         </div>
         <div class="status-item status-modified">
-          <span class="status-label">Updated</span>
+          <span class="status-label" data-i18n="popupUpdated">Updated</span>
           <span id="master-modified" class="status-value">—</span>
         </div>
         <button
           id="refresh-btn"
           class="icon-btn"
+          data-i18n-title="popupRefreshMaster"
+          data-i18n-aria="popupRefreshMaster"
           title="Refresh master from Gist"
           aria-label="Refresh master from Gist"
         >
@@ -68,40 +76,40 @@
 
       <!-- Primary actions: the two everyday buttons. -->
       <section class="actions primary-actions">
-        <button id="use-profile-btn" class="action-btn primary">
+        <button id="use-profile-btn" class="action-btn primary" data-i18n="popupUseProfile">
           Use this profile
         </button>
-        <button id="update-btn" class="action-btn">Update</button>
+        <button id="update-btn" class="action-btn" data-i18n="popupUpdate">Update</button>
       </section>
 
       <!-- Power-user operations, collapsed by default. All prior tab and
            bookmark merge/replace actions live here, unchanged. -->
       <details class="advanced">
-        <summary>Advanced (merge &amp; bookmarks)</summary>
+        <summary data-i18n="popupAdvanced">Advanced (merge &amp; bookmarks)</summary>
 
-        <section class="actions" aria-label="Tab sync">
-          <button id="push-btn" class="action-btn">Push → master (merge)</button>
-          <button id="pull-btn" class="action-btn">Pull ← master (merge)</button>
-          <button id="replace-local-btn" class="action-btn danger">
+        <section class="actions" data-i18n-aria="popupTabSyncAria" aria-label="Tab sync">
+          <button id="push-btn" class="action-btn" data-i18n="popupPushMerge">Push → master (merge)</button>
+          <button id="pull-btn" class="action-btn" data-i18n="popupPullMerge">Pull ← master (merge)</button>
+          <button id="replace-local-btn" class="action-btn danger" data-i18n="popupReplaceLocal">
             Replace local ← master
           </button>
-          <button id="replace-master-btn" class="action-btn danger">
+          <button id="replace-master-btn" class="action-btn danger" data-i18n="popupReplaceMaster">
             Replace master ← local
           </button>
         </section>
 
-        <section class="actions bookmarks-actions" aria-label="Bookmarks bar sync">
-          <h2 class="section-heading">Bookmarks bar</h2>
-          <button id="bm-push-btn" class="action-btn compact">
+        <section class="actions bookmarks-actions" data-i18n-aria="popupBookmarksSyncAria" aria-label="Bookmarks bar sync">
+          <h2 class="section-heading" data-i18n="popupBookmarksBar">Bookmarks bar</h2>
+          <button id="bm-push-btn" class="action-btn compact" data-i18n="popupPushMerge">
             Push → master (merge)
           </button>
-          <button id="bm-pull-btn" class="action-btn compact">
+          <button id="bm-pull-btn" class="action-btn compact" data-i18n="popupPullMerge">
             Pull ← master (merge)
           </button>
-          <button id="bm-replace-local-btn" class="action-btn compact danger">
+          <button id="bm-replace-local-btn" class="action-btn compact danger" data-i18n="popupReplaceLocal">
             Replace local ← master
           </button>
-          <button id="bm-replace-master-btn" class="action-btn compact danger">
+          <button id="bm-replace-master-btn" class="action-btn compact danger" data-i18n="popupReplaceMaster">
             Replace master ← local
           </button>
         </section>
@@ -112,10 +120,10 @@
 
     <!-- Shown when no token is configured. -->
     <section id="no-token" class="no-token hidden">
-      <p class="no-token-msg">
+      <p class="no-token-msg" data-i18n="popupNoToken">
         Connect a GitHub token to start syncing your tabs.
       </p>
-      <button id="open-settings-btn" class="action-btn">Open Settings</button>
+      <button id="open-settings-btn" class="action-btn" data-i18n="popupOpenSettingsBtn">Open Settings</button>
     </section>
 
     <!-- Generic modal, driven entirely by popup.js. -->
