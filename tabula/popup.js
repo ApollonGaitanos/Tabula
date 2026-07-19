@@ -29,6 +29,16 @@
   // Cached DOM references.
   const el = {};
 
+  // How recent a worker `lastOpResult` must be for the next popup open to
+  // surface it. Covers the popup-died-mid-op case (the op finished in the
+  // worker but the popup that launched it never saw the outcome); anything
+  // older is stale and silently marked seen.
+  const LAST_OP_RESULT_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
+  // Message type for handing tab surgery to the service worker (see
+  // background.js). Kept in sync with OP_TYPE there.
+  const OP_TYPE = "kartela-op";
+
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
@@ -83,6 +93,11 @@
     } catch (e) {
       showFeedback(describeError(e), "error");
     }
+
+    // Last: if a previous op finished in the worker but its popup died before
+    // seeing the result, surface that outcome once now. Runs after loadProfiles
+    // so it isn't overwritten by the status-row refresh.
+    await showLastOpResultIfAny();
   }
 
   function cacheElements() {
@@ -199,10 +214,11 @@
     el.renameBtn.disabled = state.busy || !hasSelection;
     el.deleteBtn.disabled = state.busy || !hasSelection;
 
-    // "Use this profile" makes the previewed profile the one in use — pointless
-    // (and disabled) when it already is, or when nothing is selected.
-    el.useProfileBtn.disabled =
-      state.busy || !hasSelection || previewIsInUse;
+    // "Use this profile" is ALWAYS available while a profile is selected and
+    // we're idle. When the previewed profile is already in use it acts as
+    // "reset this window to the profile's master" (see doUseProfile) rather
+    // than switching, so it is no longer disabled in that case.
+    el.useProfileBtn.disabled = state.busy || !hasSelection;
 
     // "Update" acts on the IN-USE profile regardless of what's previewed.
     el.updateBtn.disabled = state.busy || !state.inUseFile;
@@ -621,51 +637,20 @@
   async function doPull() {
     requireSelected();
     showFeedback(t("msgPullingMaster"));
-    const local = await getCurrentTabs();
-    const master = await state.provider.readProfile(state.previewFile);
-
-    const openUrls = new Set(local.tabs.map((t) => normalizeUrl(t.url)));
-    const toOpen = (master.tabs || []).filter(
-      (t) => !openUrls.has(normalizeUrl(t.url))
-    );
-
-    if (toOpen.length === 0) {
-      showFeedback(t("msgNothingToPull"), "ok");
-      return;
-    }
-
-    // Chrome requires tabs to exist before chrome.tabs.group(), so we create
-    // ALL tabs first (in master order), then group them.
-    const created = [];
-    let failed = 0;
-    for (const tab of toOpen) {
-      let newTab;
-      try {
-        newTab = await chromeCall((cb) =>
-          chrome.tabs.create({ url: tab.url, active: false, pinned: !!tab.pinned }, cb)
-        );
-      } catch (e) {
-        // Chrome refuses to open some URLs via tabs.create (chrome:// pages,
-        // another extension's pages, javascript:, malformed URLs). One bad URL
-        // must not abort the whole pull — skip it and report the count.
-        failed++;
-        continue;
-      }
-      created.push({ tabId: newTab.id, group: tab.group, pinned: !!tab.pinned });
-    }
-
-    // reuseExisting=true: Pull adds tabs alongside whatever's already open, so
-    // if a group with this title already exists in the window (e.g. the user
-    // never closed "Test" from a previous pull), fold the new tabs into it
-    // instead of stacking a second same-titled group beside it.
-    await applyGroups(created, master.groups || {}, true);
-
-    await refreshStatus();
-    let msg = t("msgOpenedTabs", String(created.length));
-    if (failed) {
-      msg += " " + t("msgTabsFailed", String(failed));
-    }
-    showFeedback(msg, failed ? "error" : "ok");
+    // The multi-second tab surgery runs in the service worker so it survives the
+    // popup closing mid-open; we hand it the explicit window id and await the
+    // outcome. If the popup dies first, the worker still finishes and the next
+    // open surfaces the result from lastOpResult.
+    const windowId = await getCurrentWindowId();
+    const res = await runWorkerOp({
+      type: OP_TYPE,
+      op: "pull",
+      windowId,
+      fileName: state.previewFile,
+    });
+    if (res.ok && !res.nothingToPull) await refreshStatus();
+    showFeedback(res.message, res.kind);
+    await markLastOpSeen(); // we survived to show it — don't re-show next open
   }
 
   /* ----------------------------------------------------------------- *
@@ -674,6 +659,9 @@
 
   async function doReplaceLocal() {
     requireSelected();
+    const windowId = await getCurrentWindowId();
+    // Fresh master fetch drives the confirmation count; the worker re-fetches
+    // its own fresh copy before mutating.
     const master = await state.provider.readProfile(state.previewFile);
 
     const confirmed = await modalConfirm({
@@ -684,114 +672,17 @@
     if (!confirmed) return;
 
     showFeedback(t("msgReplacingLocal"));
-    const res = await replaceWindowWithMaster(master);
-    if (res.aborted) {
-      showFeedback(t("msgNothingOpenedUntouched"), "error");
-      return;
-    }
-
-    await refreshStatus();
-    let msg = t("msgLocalReplaced", String(res.opened));
-    if (res.failed) {
-      msg += " " + t("msgTabsFailed", String(res.failed));
-    }
-    showFeedback(msg, res.failed ? "error" : "ok");
-  }
-
-  // Shared create-before-remove core for making the current window match a
-  // master exactly. Used by both "Replace local" (Advanced) and "Use this
-  // profile". The caller is responsible for confirming and for fetching `master`
-  // fresh; this function owns only the tab surgery and does NOT touch feedback,
-  // refreshStatus, or any profile pointer. Returns
-  // { opened, failed, aborted } — `aborted` is true only when EVERY create
-  // failed, in which case the window is left exactly as it was.
-  async function replaceWindowWithMaster(master) {
-    // create-before-remove ordering: DON'T empty the window first. Emptying it
-    // makes Chrome activate whatever remains — and if that's the New Tab Page,
-    // the NTP grabs browser-UI focus for its search box, which closes the action
-    // popup. Since all our logic runs in the popup's JS context, losing the
-    // popup mid-operation aborts everything and strands the window blank. So we
-    // create the new tabs (and group them) while the originals still exist — the
-    // window never empties — and remove the originals as the very LAST tab op.
-    // This also fails safe: if creation goes wrong we can bail without having
-    // closed anything.
-
-    // Record the ids of the tabs to replace BEFORE creating anything, so the
-    // create step can't sweep the new tabs into this set.
-    const currentTabs = await chromeCall((cb) =>
-      chrome.tabs.query({ currentWindow: true }, cb)
-    );
-    const oldIds = currentTabs.map((t) => t.id);
-
-    const toOpen = master.tabs || [];
-
-    if (toOpen.length > 0) {
-      // Recreate master state exactly, in order, while the originals still
-      // exist. New pinned tabs are clamped to the pinned region (right after any
-      // existing pinned tabs) and new unpinned tabs append at the end; order
-      // WITHIN the new pinned run and WITHIN the new unpinned run each preserve
-      // master order. So once oldIds are removed, the remaining layout is exactly
-      // master order. Grouping happens before the removal and touches only the
-      // new tabs.
-      const created = [];
-      let failed = 0;
-      for (const tab of toOpen) {
-        let newTab;
-        try {
-          newTab = await chromeCall((cb) =>
-            chrome.tabs.create(
-              { url: tab.url, active: false, pinned: !!tab.pinned },
-              cb
-            )
-          );
-        } catch (e) {
-          // Chrome refuses to open some URLs (chrome:// pages, another
-          // extension's pages, javascript:, malformed URLs). Skip the bad one so
-          // one entry can't abort the restore.
-          failed++;
-          continue;
-        }
-        created.push({
-          tabId: newTab.id,
-          group: tab.group,
-          pinned: !!tab.pinned,
-        });
-      }
-
-      if (created.length === 0) {
-        // Every create failed: don't close anything — leave the window exactly
-        // as it was and let the caller tell the user nothing could be opened.
-        return { opened: 0, failed, aborted: true };
-      }
-
-      // reuseExisting is omitted (false): this must keep creating fresh groups.
-      // Any same-titled group currently in the window belongs to the outgoing
-      // tabs and is destroyed once oldIds are removed below — reusing it would
-      // fold the new tabs into a group that's about to vanish (or, worse, drag
-      // them into its old position), breaking the exact-layout guarantee.
-      await applyGroups(created, master.groups || {});
-
-      // The new tabs now populate the window; removing the originals is the LAST
-      // tab op. Chrome auto-activates a neighboring (new) regular page, which
-      // doesn't steal browser-UI focus the way the NTP does — the popup survives.
-      // Even if it didn't, this removal is already dispatched and the window ends
-      // in the correct final state.
-      await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
-
-      return { opened: created.length, failed, aborted: false };
-    }
-
-    // Master is empty: minimal survivor path. Create one blank tab so the window
-    // doesn't close when the originals go, then remove the originals. That
-    // removal is the final action — if the NTP steals focus and closes the popup
-    // afterward, the operation is already complete; only the caller's feedback
-    // line is lost (acceptable).
-    await chromeCall((cb) =>
-      chrome.tabs.create({ url: "chrome://newtab", active: false }, cb)
-    );
-    await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
-
-    return { opened: 0, failed: 0, aborted: false };
+    // Tab surgery runs in the worker (see doPull / background.js) so it survives
+    // the popup closing mid-replace.
+    const res = await runWorkerOp({
+      type: OP_TYPE,
+      op: "replaceLocal",
+      windowId,
+      fileName: state.previewFile,
+    });
+    if (!res.aborted && res.ok) await refreshStatus();
+    showFeedback(res.message, res.kind);
+    await markLastOpSeen();
   }
 
   /* ----------------------------------------------------------------- *
@@ -825,73 +716,98 @@
    * Primary action: Use this profile
    *
    * Makes the PREVIEWED profile the one in use and replaces this window's tabs
-   * with that profile's master (the Replace-local machinery). Before touching
-   * any tab, optionally syncs the OUTGOING in-use profile so profiles can be
-   * round-tripped without losing tabs. Disabled when the previewed profile is
-   * already in use (so there is never an outgoing == incoming case here).
+   * with that profile's master (executed in the worker). Before touching any
+   * tab, optionally syncs the OUTGOING in-use profile so profiles can be
+   * round-tripped without losing tabs. When the previewed profile is ALREADY in
+   * use this button instead RESETS the window to that profile's master: same
+   * surgery, distinct wording, outgoing switch-sync skipped, in-use pointer
+   * unchanged.
    * ----------------------------------------------------------------- */
 
   async function doUseProfile() {
     requireSelected();
-    // The button is disabled in this case; guard defensively anyway.
-    if (state.previewFile === state.inUseFile) return;
 
+    const windowId = await getCurrentWindowId();
     const target = previewProfileMeta();
     const targetName = target ? target.displayName : state.previewFile;
 
-    // Fresh master fetch (like Replace local): drives the confirmation count and
-    // the tab surgery.
+    // "Use this profile" is now always enabled. When the previewed profile is
+    // ALREADY in use, the button means "reset this window to that profile's
+    // master": identical tab surgery, distinct wording, and — crucially — the
+    // outgoing switch-sync is SKIPPED (see below). The in-use pointer doesn't
+    // change in that case.
+    const isReset = state.previewFile === state.inUseFile;
+
+    // Fresh master fetch (like Replace local): drives the confirmation count.
     const master = await state.provider.readProfile(state.previewFile);
 
     const confirmed = await modalConfirm({
-      message: t("confirmUseProfileBody", [
-        targetName,
-        String((master.tabs || []).length),
-      ]),
-      confirmLabel: t("popupUseProfile"),
+      message: isReset
+        ? t("confirmResetWindowBody", [
+            targetName,
+            String((master.tabs || []).length),
+          ])
+        : t("confirmUseProfileBody", [
+            targetName,
+            String((master.tabs || []).length),
+          ]),
+      confirmLabel: isReset ? t("popupResetShort") : t("popupUseProfile"),
       danger: true,
     });
     if (!confirmed) return;
 
     // BEFORE replacing tabs: optionally sync the OUTGOING (in-use) profile, so
     // the window we're about to close is first saved into the profile we're
-    // leaving. This must happen before any tab is touched. A failure warns but
-    // does NOT block the switch (surfaced with the final message below).
+    // leaving. A failure warns but does NOT block the switch.
+    //
+    // SKIP this entirely on a reset: the outgoing profile IS the target, so
+    // syncing it would push the current window into master and then immediately
+    // replace it back from that same master — round-tripping the very tabs we
+    // meant to discard and defeating the reset.
     let switchNote = null;
-    if (state.inUseFile && state.inUseFile !== state.previewFile) {
+    if (!isReset && state.inUseFile && state.inUseFile !== state.previewFile) {
       switchNote = await maybeSyncOnSwitch(state.inUseFile);
     }
 
-    showFeedback(t("msgSwitchingProfile"));
-    const res = await replaceWindowWithMaster(master);
+    const inUse = inUseProfileMeta();
+    const inUseName = inUse ? inUse.displayName : state.inUseFile;
+
+    showFeedback(isReset ? t("msgResettingWindow") : t("msgSwitchingProfile"));
+    // Tab surgery (and the in-use pointer commit on success) run in the worker
+    // so they survive the popup closing mid-switch.
+    const res = await runWorkerOp({
+      type: OP_TYPE,
+      op: "useProfile",
+      windowId,
+      fileName: state.previewFile,
+      targetName,
+      inUseName,
+      isReset,
+    });
+
+    const hadSyncError = switchNote && switchNote.kind === "error";
+
     if (res.aborted) {
-      // Nothing could be opened: do NOT switch the in-use pointer — the window
-      // is untouched and we're still using the previous profile.
-      const inUse = inUseProfileMeta();
-      let msg = t(
-        "msgNothingStillUsing",
-        inUse ? inUse.displayName : state.inUseFile
-      );
-      if (switchNote && switchNote.kind === "error") {
-        msg = switchNote.text + " " + msg;
-      }
+      // Nothing could be opened: the worker did NOT move the in-use pointer —
+      // the window is untouched and we're still using the previous profile.
+      let msg = res.message;
+      if (hadSyncError) msg = switchNote.text + " " + msg;
       showFeedback(msg, "error");
+      await markLastOpSeen();
       return;
     }
 
-    // Commit the switch: the previewed profile is now the one in use.
+    // The worker committed the in-use pointer (activeProfile). Mirror it into
+    // local state now that we survived to update the UI. On a reset this is a
+    // no-op (previewFile already equals inUseFile).
     state.inUseFile = state.previewFile;
-    await setActiveProfile(state.inUseFile);
     await refreshStatus();
     updateActionAvailability();
 
-    let msg = t("msgNowUsing", [targetName, String(res.opened)]);
-    if (res.failed) {
-      msg += " " + t("msgTabsFailed", String(res.failed));
-    }
-    const hadSyncError = switchNote && switchNote.kind === "error";
+    let msg = res.message;
     if (hadSyncError) msg = switchNote.text + " " + msg;
-    showFeedback(msg, res.failed || hadSyncError ? "error" : "ok");
+    showFeedback(msg, res.failed || hadSyncError ? "error" : res.kind);
+    await markLastOpSeen();
   }
 
   /* ----------------------------------------------------------------- *
@@ -1033,61 +949,94 @@
   }
 
   /* ----------------------------------------------------------------- *
-   * Grouping helper (shared by Pull and Replace local)
+   * Service-worker op handoff
+   *
+   * The pull / replace-local / use-profile tab surgery is EXECUTED IN THE
+   * SERVICE WORKER (background.js), not here, so it survives the popup closing
+   * mid-open (which used to abort a create-before-remove halfway and duplicate
+   * every tab and group). The popup still owns confirmation, feedback and
+   * switch-sync; it just hands off the mutation and awaits the result — or dies,
+   * in which case the worker still finishes and the next open shows the outcome.
+   * The shared surgery helpers (applyGroups, replaceWindowWithMaster,
+   * pullMasterIntoWindow) now live in common.js, parameterized by windowId.
    * ----------------------------------------------------------------- */
 
-  // Given created tabs [{tabId, group, pinned}] and group metadata
-  // {title:{color,collapsed}}, group tabs by title then style each group.
-  //
-  // reuseExisting (default false) controls whether a same-titled group
-  // already in the window is reused instead of creating a new one. Chrome
-  // happily creates multiple groups with identical titles in one window, so
-  // always creating fresh groups (as Pull used to) piles up duplicate
-  // "Test", "Test", "Test" groups every time the same title reappears.
-  async function applyGroups(created, groupsMeta, reuseExisting) {
-    const byTitle = {};
-    for (const item of created) {
-      // Pinned tabs cannot belong to a tab group — skip them here.
-      if (!item.group || item.pinned) continue;
-      (byTitle[item.group] = byTitle[item.group] || []).push(item.tabId);
-    }
+  // The worker has no "current window", so we resolve and pass this popup's
+  // window id explicitly.
+  async function getCurrentWindowId() {
+    const win = await chromeCall((cb) => chrome.windows.getCurrent(cb));
+    return win.id;
+  }
 
-    for (const title of Object.keys(byTitle)) {
-      let groupId = null;
-      if (reuseExisting) {
-        // Look for a group with this exact title already in the window.
-        // Titles aren't unique — Chrome lets a window hold several groups
-        // named e.g. "Test" — so this can match more than one; we deliberately
-        // pick the first and fold the new tabs into it rather than trying to
-        // pick "the right one" (there's no signal to disambiguate on).
-        const existing = await chromeCall((cb) =>
-          chrome.tabGroups.query(
-            { title, windowId: chrome.windows.WINDOW_ID_CURRENT },
-            cb
-          )
-        );
-        if (existing && existing.length > 0) {
-          groupId = existing[0].id;
-          await chromeCall((cb) =>
-            chrome.tabs.group({ tabIds: byTitle[title], groupId }, cb)
-          );
-        }
+  // Send an op to the worker and resolve its result object. Rejects (so
+  // guarded() surfaces it) on a messaging failure or an empty response.
+  function runWorkerOp(payload) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(payload, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new TabulaError(chrome.runtime.lastError.message, "generic"));
+          } else if (!response) {
+            reject(new TabulaError(t("errGeneric"), "generic"));
+          } else {
+            resolve(response);
+          }
+        });
+      } catch (e) {
+        reject(new TabulaError(e.message, "generic"));
       }
-      if (groupId == null) {
-        groupId = await chromeCall((cb) =>
-          chrome.tabs.group({ tabIds: byTitle[title] }, cb)
-        );
+    });
+  }
+
+  // Mark the worker's lastOpResult as seen once THIS popup has rendered it, so
+  // it isn't shown again on the next open. Only a popup that DIED mid-op leaves
+  // it unseen for showLastOpResultIfAny to surface.
+  async function markLastOpSeen() {
+    try {
+      const { lastOpResult } = await storageGet("local", ["lastOpResult"]);
+      if (lastOpResult && !lastOpResult.seen) {
+        await storageSet("local", {
+          lastOpResult: Object.assign({}, lastOpResult, { seen: true }),
+        });
       }
-      // Master is the source of truth for color/collapsed on every pull, so
-      // this runs whether the group was just created or reused.
-      const meta = groupsMeta[title] || {};
-      const updateProps = { title };
-      if (meta.color) updateProps.color = meta.color;
-      if (typeof meta.collapsed === "boolean")
-        updateProps.collapsed = meta.collapsed;
-      await chromeCall((cb) =>
-        chrome.tabGroups.update(groupId, updateProps, cb)
-      );
+    } catch (e) {
+      /* non-critical */
+    }
+  }
+
+  // On popup open, surface a recent, unseen worker outcome once (the
+  // popup-died-mid-op case), then mark it seen. Stale results are silently
+  // consumed so they never appear.
+  async function showLastOpResultIfAny() {
+    let stored;
+    try {
+      ({ lastOpResult: stored } = await storageGet("local", ["lastOpResult"]));
+    } catch (e) {
+      return;
+    }
+    if (!stored || stored.seen) return;
+    const age = Date.now() - new Date(stored.at).getTime();
+    if (!(age >= 0) || age > LAST_OP_RESULT_MAX_AGE_MS) {
+      // Too old or unparseable: consume it silently so it never shows.
+      try {
+        await storageSet("local", {
+          lastOpResult: Object.assign({}, stored, { seen: true }),
+        });
+      } catch (e) {
+        /* ignore */
+      }
+      return;
+    }
+    showFeedback(
+      t("msgLastOpResult", stored.message || ""),
+      stored.ok ? "ok" : "error"
+    );
+    try {
+      await storageSet("local", {
+        lastOpResult: Object.assign({}, stored, { seen: true }),
+      });
+    } catch (e) {
+      /* ignore */
     }
   }
 

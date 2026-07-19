@@ -334,8 +334,166 @@ async function runAutoSync() {
 }
 
 /* ------------------------------------------------------------------ *
+ * User-initiated tab surgery (message-driven)
+ *
+ * The popup gathers everything that needs the DOM or the user (a fresh master
+ * fetch for the confirmation count, the confirmation modal, the outgoing
+ * switch-sync) and then hands the actual multi-second tab mutation to this
+ * worker via a runtime message. WHY: the action popup closes the moment focus
+ * leaves it — very likely while 15–20 tabs are opening — which previously
+ * aborted the create-before-remove flows halfway and duplicated every tab and
+ * group. The worker has no UI to lose, so the op always runs to completion. The
+ * outcome is ALSO written to storage.local `lastOpResult` so the NEXT popup
+ * open can report what happened even if the popup that started it is long gone.
+ *
+ * These ops perform NO backend write (they only read master — fetched fresh
+ * here immediately before mutating — and change local tabs), so they
+ * deliberately do NOT take withSyncLock; that mutex guards backend
+ * read-modify-write, which this path never does. User-initiated work like this
+ * takes priority over auto-sync regardless (auto-sync's own re-entrancy guard
+ * and the lock keep the two from clobbering each other's backend writes).
+ * ------------------------------------------------------------------ */
+
+const OP_TYPE = "kartela-op";
+
+// Persist the outcome of a user-initiated op for the next popup to surface.
+// `seen:false` lets the popup show it exactly once; a popup that survived the
+// op marks it seen itself, so only a popup DEATH leaves it to be shown on the
+// next open. Never throws — it runs at the tail of the op handler.
+function recordOpResult(op, ok, message) {
+  return storageSet("local", {
+    lastOpResult: {
+      at: new Date().toISOString(),
+      op: op || "?",
+      ok: !!ok,
+      message: message || "",
+      seen: false,
+    },
+  }).catch(() => {});
+}
+
+// Perform one user-initiated op against msg.windowId and return a result the
+// popup can render directly ({ ok, opened, failed, aborted, nothingToPull,
+// message, kind }). ALWAYS records lastOpResult; never throws.
+async function handleKartelaOp(msg) {
+  const op = msg.op;
+  const windowId = msg.windowId;
+  try {
+    const config = await getBackendConfig();
+    if (!config.configured) {
+      const message = t("errGeneric");
+      await recordOpResult(op, false, message);
+      return { ok: false, aborted: false, opened: 0, failed: 0, message, kind: "error" };
+    }
+    const provider = makeProvider(config);
+    // Re-fetch master FRESH inside the worker, immediately before mutating.
+    const master = await provider.readProfile(msg.fileName);
+
+    if (op === "pull") {
+      const res = await pullMasterIntoWindow(windowId, master);
+      let message;
+      let kind;
+      if (res.nothingToPull) {
+        message = t("msgNothingToPull");
+        kind = "ok";
+      } else {
+        message = t("msgOpenedTabs", String(res.opened));
+        if (res.failed) message += " " + t("msgTabsFailed", String(res.failed));
+        kind = res.failed ? "error" : "ok";
+      }
+      await recordOpResult(op, true, message);
+      return {
+        ok: true,
+        opened: res.opened,
+        failed: res.failed,
+        nothingToPull: res.nothingToPull,
+        message,
+        kind,
+      };
+    }
+
+    if (op === "replaceLocal") {
+      const res = await replaceWindowWithMaster(windowId, master);
+      let message;
+      let kind;
+      let ok;
+      if (res.aborted) {
+        ok = false;
+        message = t("msgNothingOpenedUntouched");
+        kind = "error";
+      } else {
+        ok = true;
+        message = t("msgLocalReplaced", String(res.opened));
+        if (res.failed) message += " " + t("msgTabsFailed", String(res.failed));
+        kind = res.failed ? "error" : "ok";
+      }
+      await recordOpResult(op, ok, message);
+      return {
+        ok,
+        opened: res.opened,
+        failed: res.failed,
+        aborted: res.aborted,
+        message,
+        kind,
+      };
+    }
+
+    if (op === "useProfile") {
+      const res = await replaceWindowWithMaster(windowId, master);
+      let message;
+      let kind;
+      let ok;
+      if (res.aborted) {
+        // Nothing opened: DON'T move the in-use pointer — still on the old
+        // profile, window untouched.
+        ok = false;
+        message = t("msgNothingStillUsing", msg.inUseName || msg.targetName || "");
+        kind = "error";
+      } else {
+        // Commit the in-use pointer HERE in the worker, so it sticks even if the
+        // popup that started this op has already died. (On a reset, msg.fileName
+        // already equals the in-use profile, so this is a harmless re-write.)
+        await setActiveProfile(msg.fileName);
+        ok = true;
+        message = msg.isReset
+          ? t("msgWindowReset", [msg.targetName || "", String(res.opened)])
+          : t("msgNowUsing", [msg.targetName || "", String(res.opened)]);
+        if (res.failed) message += " " + t("msgTabsFailed", String(res.failed));
+        kind = res.failed ? "error" : "ok";
+      }
+      await recordOpResult(op, ok, message);
+      return {
+        ok,
+        opened: res.opened,
+        failed: res.failed,
+        aborted: res.aborted,
+        message,
+        kind,
+      };
+    }
+
+    // Unknown op.
+    const message = t("errGeneric");
+    await recordOpResult(op, false, message);
+    return { ok: false, aborted: false, opened: 0, failed: 0, message, kind: "error" };
+  } catch (e) {
+    const message = describeError(e);
+    await recordOpResult(op, false, message);
+    return { ok: false, aborted: false, opened: 0, failed: 0, message, kind: "error" };
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Listeners
  * ------------------------------------------------------------------ */
+
+// User-initiated tab surgery from the popup. Return true to keep the message
+// channel open for the async sendResponse (the op takes several seconds).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== OP_TYPE) return; // not ours — leave the channel be
+  handleKartelaOp(msg).then(sendResponse);
+  return true;
+});
 
 // Recreate the alarm on install and on browser startup (alarms survive worker
 // restarts, but reconciling is cheap and keeps the schedule authoritative).

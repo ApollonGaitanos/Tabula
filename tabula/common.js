@@ -968,6 +968,209 @@ function getTabsOfWindow(windowId) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Tab surgery (DOM-free — EXECUTED IN THE SERVICE WORKER)
+ *
+ * WHY THESE LIVE HERE AND RUN IN THE WORKER: the pull / replace-local /
+ * use-profile flows open 15–20 tabs and their groups, which takes several
+ * seconds. They used to run in the popup's JS context, but the action popup
+ * closes the instant focus leaves it — very likely while all those tabs are
+ * still opening. Because the replace flows are create-before-remove, a popup
+ * death mid-flight left the NEW tabs+groups created but the OLD ones never
+ * removed, duplicating every tab and every group. Running the surgery in the
+ * service worker (which has no UI to lose) makes it survive to completion no
+ * matter what the popup does; background.js drives it via a runtime message.
+ *
+ * All three are parameterized by an EXPLICIT windowId (the worker has no
+ * "current window") and never touch the DOM. Every chrome.tabs.create MUST
+ * carry that windowId, or the tab would land in some other window. Tab surgery
+ * deliberately does NOT take withSyncLock: that mutex guards backend
+ * read-modify-write sections, and none of these functions write to the backend
+ * — they only read a fresh master (the caller passes it in) and mutate local
+ * tabs.
+ * ------------------------------------------------------------------ */
+
+// Group created tabs [{tabId, group, pinned}] by title, then style each group
+// from the master meta {title:{color,collapsed}}.
+//
+// REUSE-EVERYWHERE: if a group with the same title already exists in the target
+// window, fold the new tabs into it instead of creating a fresh one — for BOTH
+// pull and the replace flows.
+//   - Pull adds alongside whatever's open, so reuse avoids stacking a second
+//     "Test" beside an existing "Test".
+//   - Replace creates the new tabs while the OUTGOING tabs (and their groups)
+//     still exist, then removes the outgoing tabs last. Folding the new tabs
+//     into the existing same-title group means that group SURVIVES the removal
+//     holding only the new tabs — so there is exactly one group per title,
+//     never a duplicated pair (the bug this fixes).
+// Chrome lets a window hold several groups with identical titles, so the query
+// can match more than one; we pick the first and fold into it (there's no
+// signal to disambiguate on). Master is the source of truth for color/collapsed
+// and is applied whether the group was reused or freshly created.
+async function applyGroups(windowId, created, groupsMeta) {
+  const byTitle = {};
+  for (const item of created) {
+    // Pinned tabs cannot belong to a tab group — skip them here.
+    if (!item.group || item.pinned) continue;
+    (byTitle[item.group] = byTitle[item.group] || []).push(item.tabId);
+  }
+
+  for (const title of Object.keys(byTitle)) {
+    let groupId = null;
+    // Query THIS window explicitly (we run in the worker, which has no
+    // WINDOW_ID_CURRENT).
+    const existing = await chromeCall((cb) =>
+      chrome.tabGroups.query({ title, windowId }, cb)
+    );
+    if (existing && existing.length > 0) {
+      groupId = existing[0].id;
+      await chromeCall((cb) =>
+        chrome.tabs.group({ tabIds: byTitle[title], groupId }, cb)
+      );
+    } else {
+      groupId = await chromeCall((cb) =>
+        chrome.tabs.group(
+          { tabIds: byTitle[title], createProperties: { windowId } },
+          cb
+        )
+      );
+    }
+    const meta = groupsMeta[title] || {};
+    const updateProps = { title };
+    if (meta.color) updateProps.color = meta.color;
+    if (typeof meta.collapsed === "boolean")
+      updateProps.collapsed = meta.collapsed;
+    await chromeCall((cb) => chrome.tabGroups.update(groupId, updateProps, cb));
+  }
+}
+
+// Make an explicit window match a master exactly (create-before-remove). Used
+// by both "Replace local" and "Use this profile". The caller confirms and
+// fetches `master` fresh; this owns only the tab surgery and touches no
+// feedback, no status, no profile pointer. Returns { opened, failed, aborted }
+// — `aborted` is true only when EVERY create failed, leaving the window exactly
+// as it was.
+async function replaceWindowWithMaster(windowId, master) {
+  // create-before-remove ordering: DON'T empty the window first. Emptying it
+  // makes Chrome activate whatever remains — and if that's the New Tab Page,
+  // the NTP grabs browser-UI focus and would close the action popup. We now run
+  // in the worker (no popup to lose), but the ordering also fails safe: if
+  // creation goes wrong we bail without having closed anything. So we create the
+  // new tabs (and group them) while the originals still exist — the window never
+  // empties — and remove the originals as the very LAST tab op.
+
+  // Record the ids of the tabs to replace BEFORE creating anything, so the
+  // create step can't sweep the new tabs into this set.
+  const currentTabs = await chromeCall((cb) =>
+    chrome.tabs.query({ windowId }, cb)
+  );
+  const oldIds = currentTabs.map((tb) => tb.id);
+
+  const toOpen = master.tabs || [];
+
+  if (toOpen.length > 0) {
+    // Recreate master state exactly, in order, while the originals still exist.
+    // New pinned tabs are clamped to the pinned region and new unpinned tabs
+    // append at the end; order WITHIN the new pinned run and WITHIN the new
+    // unpinned run each preserve master order. Once oldIds are removed, the
+    // remaining layout is master order. NOTE ON GROUP STRIP POSITION: because
+    // applyGroups now REUSES a same-title group where one already exists, a
+    // reused group keeps its outgoing strip position rather than being
+    // re-placed in master order. Group MEMBERSHIP, titles, color and collapsed
+    // are always correct; exact left-to-right group position after a reuse is
+    // best-effort and may differ slightly. That trade-off is deliberate —
+    // never duplicating a group matters more than its strip index.
+    const created = [];
+    let failed = 0;
+    for (const tab of toOpen) {
+      let newTab;
+      try {
+        newTab = await chromeCall((cb) =>
+          chrome.tabs.create(
+            { url: tab.url, active: false, pinned: !!tab.pinned, windowId },
+            cb
+          )
+        );
+      } catch (e) {
+        // Chrome refuses to open some URLs (chrome:// pages, another
+        // extension's pages, javascript:, malformed URLs). Skip the bad one so
+        // one entry can't abort the restore.
+        failed++;
+        continue;
+      }
+      created.push({
+        tabId: newTab.id,
+        group: tab.group,
+        pinned: !!tab.pinned,
+      });
+    }
+
+    if (created.length === 0) {
+      // Every create failed: don't close anything — leave the window exactly as
+      // it was and let the caller tell the user nothing could be opened.
+      return { opened: 0, failed, aborted: true };
+    }
+
+    await applyGroups(windowId, created, master.groups || {});
+
+    // The new tabs now populate the window; removing the originals is the LAST
+    // tab op and leaves the window in its correct final state.
+    await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
+
+    return { opened: created.length, failed, aborted: false };
+  }
+
+  // Master is empty: minimal survivor path. Create one blank tab so the window
+  // doesn't close when the originals go, then remove the originals.
+  await chromeCall((cb) =>
+    chrome.tabs.create({ url: "chrome://newtab", active: false, windowId }, cb)
+  );
+  await chromeCall((cb) => chrome.tabs.remove(oldIds, cb));
+
+  return { opened: 0, failed: 0, aborted: false };
+}
+
+// Merge a master's tabs into an explicit window (Pull semantics): open only the
+// master tabs whose normalized URL isn't already present, then group them
+// (reusing same-title groups). The caller fetches `master` fresh. Returns
+// { opened, failed, nothingToPull }.
+async function pullMasterIntoWindow(windowId, master) {
+  const local = await getTabsOfWindow(windowId);
+  const openUrls = new Set(local.tabs.map((x) => normalizeUrl(x.url)));
+  const toOpen = (master.tabs || []).filter(
+    (x) => !openUrls.has(normalizeUrl(x.url))
+  );
+
+  if (toOpen.length === 0) {
+    return { opened: 0, failed: 0, nothingToPull: true };
+  }
+
+  // Chrome requires tabs to exist before chrome.tabs.group(), so create ALL
+  // tabs first (in master order), then group them.
+  const created = [];
+  let failed = 0;
+  for (const tab of toOpen) {
+    let newTab;
+    try {
+      newTab = await chromeCall((cb) =>
+        chrome.tabs.create(
+          { url: tab.url, active: false, pinned: !!tab.pinned, windowId },
+          cb
+        )
+      );
+    } catch (e) {
+      // One bad URL must not abort the whole pull — skip it and count it.
+      failed++;
+      continue;
+    }
+    created.push({ tabId: newTab.id, group: tab.group, pinned: !!tab.pinned });
+  }
+
+  await applyGroups(windowId, created, master.groups || {});
+
+  return { opened: created.length, failed, nothingToPull: false };
+}
+
+/* ------------------------------------------------------------------ *
  * Bookmarks bar sync (DOM-free — used from both the popup and the worker)
  *
  * The Chrome bookmarks bar is a single global folder, so its synced state is
